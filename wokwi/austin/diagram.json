@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "author": "Paper 3: IoT + RG-AdaFedResidual",
+  "editor": "wokwi",
+  "parts": [
+    {"type":"wokwi-esp32-devkit-v1","id":"esp32","top":20,"left":40,"attrs":{}},
+    {"type":"wokwi-lcd2004","id":"lcd","top":-220,"left":300,"attrs":{"pins":"i2c"}},
+    {"type":"wokwi-slide-potentiometer","id":"rawTurb","top":210,"left":-320,"attrs":{"value":"22","label":"SEN0189 Raw Turbidity"}},
+    {"type":"wokwi-slide-potentiometer","id":"filteredTurb","top":210,"left":-175,"attrs":{"value":"6","label":"SEN0189 Filtered Turbidity"}},
+    {"type":"wokwi-slide-potentiometer","id":"ph","top":210,"left":-30,"attrs":{"value":"52","label":"SEN0161-V2 pH"}},
+    {"type":"wokwi-slide-potentiometer","id":"temp","top":210,"left":115,"attrs":{"value":"45","label":"DS18B20 Signal"}},
+    {"type":"wokwi-slide-potentiometer","id":"flow","top":210,"left":260,"attrs":{"value":"50","label":"YF-S201 Flow Signal"}},
+    {"type":"wokwi-slide-potentiometer","id":"chlorine","top":210,"left":405,"attrs":{"value":"37","label":"4-20mA Residual Chlorine"}},
+    {"type":"wokwi-servo","id":"alumPump","top":330,"left":560,"attrs":{"horn":"double","label":"Alum Metering Pump"}},
+    {"type":"wokwi-servo","id":"chlorinePump","top":330,"left":720,"attrs":{"horn":"double","label":"Chlorine Metering Pump"}},
+    {"type":"wokwi-led","id":"online","top":-50,"left":350,"attrs":{"color":"green","label":"MQTT"}},
+    {"type":"wokwi-led","id":"alumLed","top":30,"left":480,"attrs":{"color":"orange","label":"Alum"}},
+    {"type":"wokwi-led","id":"chlorineLed","top":30,"left":555,"attrs":{"color":"blue","label":"Chlorine"}},
+    {"type":"wokwi-led","id":"alarm","top":30,"left":650,"attrs":{"color":"red","label":"Dose >=90%"}},
+    {"type":"wokwi-resistor","id":"r1","top":80,"left":350,"rotate":90,"attrs":{"value":"220"}},
+    {"type":"wokwi-resistor","id":"r2","top":80,"left":480,"rotate":90,"attrs":{"value":"220"}},
+    {"type":"wokwi-resistor","id":"r3","top":80,"left":555,"rotate":90,"attrs":{"value":"220"}},
+    {"type":"wokwi-resistor","id":"r4","top":80,"left":650,"rotate":90,"attrs":{"value":"220"}}
+  ],
+  "connections": [
+    ["esp32:21","lcd:SDA","green",[]],["esp32:22","lcd:SCL","blue",[]],["esp32:VIN","lcd:VCC","red",[]],["esp32:GND.1","lcd:GND","black",[]],
+    ["esp32:34","rawTurb:SIG","purple",[]],["esp32:3V3","rawTurb:VCC","red",[]],["esp32:GND.1","rawTurb:GND","black",[]],
+    ["esp32:35","filteredTurb:SIG","purple",[]],["esp32:3V3","filteredTurb:VCC","red",[]],["esp32:GND.1","filteredTurb:GND","black",[]],
+    ["esp32:32","ph:SIG","purple",[]],["esp32:3V3","ph:VCC","red",[]],["esp32:GND.1","ph:GND","black",[]],
+    ["esp32:33","temp:SIG","purple",[]],["esp32:3V3","temp:VCC","red",[]],["esp32:GND.1","temp:GND","black",[]],
+    ["esp32:VP","flow:SIG","purple",[]],["esp32:3V3","flow:VCC","red",[]],["esp32:GND.1","flow:GND","black",[]],
+    ["esp32:VN","chlorine:SIG","purple",[]],["esp32:3V3","chlorine:VCC","red",[]],["esp32:GND.1","chlorine:GND","black",[]],
+    ["esp32:25","alumPump:PWM","orange",[]],["esp32:VIN","alumPump:V+","red",[]],["esp32:GND.1","alumPump:GND","black",[]],
+    ["esp32:26","chlorinePump:PWM","blue",[]],["esp32:VIN","chlorinePump:V+","red",[]],["esp32:GND.1","chlorinePump:GND","black",[]],
+    ["esp32:2","online:A","green",[]],["online:K","r1:1","black",[]],["r1:2","esp32:GND.1","black",[]],
+    ["esp32:27","alumLed:A","orange",[]],["alumLed:K","r2:1","black",[]],["r2:2","esp32:GND.1","black",[]],
+    ["esp32:14","chlorineLed:A","blue",[]],["chlorineLed:K","r3:1","black",[]],["r3:2","esp32:GND.1","black",[]],
+    ["esp32:13","alarm:A","red",[]],["alarm:K","r4:1","black",[]],["r4:2","esp32:GND.1","black",[]]
+  ],
+  "serialMonitor":{"display":"terminal","convertEol":true,"newline":"lf"}
+}
