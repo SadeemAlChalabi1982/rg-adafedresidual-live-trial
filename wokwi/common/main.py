@@ -9,6 +9,11 @@ from umqtt.simple import MQTTClient
 TOPIC_ROOT = "rgaf-sadeem-paper3-live-20260831-v1"
 MQTT_HOST = "broker.hivemq.com"  # Public trial broker; contains no private measurements
 MQTT_PORT = 1883
+WIFI_SSID = "Wokwi-GUEST"
+WIFI_PASSWORD = ""
+RECONNECT_MIN_MS = 1000
+RECONNECT_MAX_MS = 15000
+STATUS_INTERVAL_MS = 10000
 ADC_PINS = {
     "raw_turbidity": 34,
     "filtered_turbidity": 35,
@@ -132,6 +137,54 @@ def on_message(received, body):
         print("MQTT payload error", error)
 
 
+def connect_wifi():
+    if wlan.isconnected():
+        return
+    online_led.value(0)
+    display("WIFI RETRY")
+    print("WIFI connecting to", WIFI_SSID)
+    try:
+        wlan.disconnect()
+    except Exception:
+        pass
+    wlan.active(True)
+    wlan.connect(WIFI_SSID, WIFI_PASSWORD)
+    started = time.ticks_ms()
+    while not wlan.isconnected():
+        if time.ticks_diff(time.ticks_ms(), started) >= 12000:
+            raise OSError("WiFi connection timeout")
+        time.sleep_ms(150)
+    print("WIFI connected", wlan.ifconfig()[0])
+
+
+def connect_mqtt():
+    global client
+    session_suffix = time.ticks_ms() & 0xFFFF
+    client_id = ("rgaf-%s-%04x" % (station, session_suffix)).encode()
+    client = MQTTClient(client_id, MQTT_HOST, port=MQTT_PORT, keepalive=30)
+    client.set_callback(on_message)
+    client.set_last_will(topic("status"), b"offline", retain=True, qos=0)
+    client.connect(clean_session=True)
+    for name in ("inject", "command", "weights"):
+        client.subscribe(topic(name), qos=0)
+    client.publish(topic("status"), b"online", retain=True, qos=0)
+    online_led.value(1)
+    display("MQTT ONLINE")
+    print("MQTT connected", MQTT_HOST, station)
+    print("ONLINE", station, "ESP32 -> Raspberry Pi -> Federated Cloud")
+
+
+def drop_mqtt():
+    global client
+    online_led.value(0)
+    if client is not None:
+        try:
+            client.disconnect()
+        except Exception:
+            pass
+    client = None
+
+
 station = station_id()
 print("BOOT RG-AdaFedResidual station", station)
 adcs = {name: ADC(Pin(pin)) for name, pin in ADC_PINS.items()}
@@ -150,29 +203,29 @@ alum_percent = chlorine_percent = 0.0
 injected = False
 
 wlan = network.WLAN(network.STA_IF)
-wlan.active(True)
-print("WIFI connecting to Wokwi-GUEST")
-wlan.connect("Wokwi-GUEST", "")
-while not wlan.isconnected():
-    time.sleep_ms(150)
-print("WIFI connected", wlan.ifconfig()[0])
-chlorine_led.value(1)
-
-client = MQTTClient(("rgaf-20260830-" + station).encode(), MQTT_HOST, port=MQTT_PORT, keepalive=30)
-client.set_callback(on_message)
-client.connect(clean_session=True)
-print("MQTT connected", MQTT_HOST, station)
-for name in ("inject", "command", "weights"):
-    client.subscribe(topic(name), qos=0)
-client.publish(topic("status"), b"online", retain=True, qos=0)
-online_led.value(1)
+client = None
 set_pumps(0, 0)
-display("MQTT ONLINE")
-print("ONLINE", station, "ESP32 -> Raspberry Pi -> Federated Cloud")
 
 last_local = time.ticks_ms()
+last_status = time.ticks_ms()
+retry_ms = RECONNECT_MIN_MS
 while True:
+    if client is None:
+        try:
+            connect_wifi()
+            connect_mqtt()
+            retry_ms = RECONNECT_MIN_MS
+            last_status = time.ticks_ms()
+        except Exception as error:
+            drop_mqtt()
+            display("RECONNECT")
+            print("RECONNECT in %dms:" % retry_ms, error)
+            time.sleep_ms(retry_ms)
+            retry_ms = min(RECONNECT_MAX_MS, retry_ms * 2)
+            continue
     try:
+        if not wlan.isconnected():
+            raise OSError("WiFi link lost")
         client.check_msg()
         if not injected and time.ticks_diff(time.ticks_ms(), last_local) >= 1500:
             last_local = time.ticks_ms()
@@ -182,8 +235,11 @@ while True:
             sensors["raw_delta"] = 0.0
             publish_telemetry("wokwi_electrical_sensor_emulator")
             display("LOCAL ADC")
+        if time.ticks_diff(time.ticks_ms(), last_status) >= STATUS_INTERVAL_MS:
+            client.publish(topic("status"), b"online", retain=True, qos=0)
+            last_status = time.ticks_ms()
         time.sleep_ms(20)
     except Exception as error:
-        online_led.value(0)
-        print("Runtime error", error)
-        time.sleep(1)
+        print("LINK LOST", error)
+        drop_mqtt()
+        display("RECONNECT")
