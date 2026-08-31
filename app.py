@@ -25,9 +25,9 @@ CYCLE_SECONDS = float(os.getenv("CYCLE_SECONDS", "3"))
 DEMO_ONLY = os.getenv("DEMO_ONLY", "false").lower() in {"1", "true", "yes"}
 
 WOKWI_URLS = {
-    "austin": os.getenv("WOKWI_AUSTIN_URL", "https://wokwi.com/projects/473727442599171073"),
-    "tongji": os.getenv("WOKWI_TONGJI_URL", "https://wokwi.com/projects/473728418763762689"),
-    "virtual": os.getenv("WOKWI_VIRTUAL_URL", "https://wokwi.com/projects/473728438580803585"),
+    "austin": os.getenv("WOKWI_AUSTIN_URL", "https://wokwi.com/projects/473854149978000385"),
+    "tongji": os.getenv("WOKWI_TONGJI_URL", "https://wokwi.com/projects/473855638857098241"),
+    "virtual": os.getenv("WOKWI_VIRTUAL_URL", "https://wokwi.com/projects/473855699260353537"),
 }
 
 
