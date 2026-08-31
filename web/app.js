@@ -41,11 +41,8 @@ function commandMarkup(id) {
     <svg class="command-svg" viewBox="0 0 320 41" preserveAspectRatio="none" aria-hidden="true">
       <path class="command-wire" d="M54 2 V14 H80 V41"/>
       <path class="command-wire" d="M54 14 H240 V41"/>
-      <circle class="command-node source" cx="54" cy="2" r="5"/>
-      <circle class="command-node target" cx="80" cy="39" r="4"/>
-      <circle class="command-node target" cx="240" cy="39" r="4"/>
-      <circle class="command-ball" r="5"><animateMotion id="commandMotion-${id}-0" begin="indefinite" dur="1.15s" fill="freeze" path="M54 2 V14 H80 V41"/></circle>
-      <circle class="command-ball" r="5"><animateMotion id="commandMotion-${id}-1" begin="indefinite" dur="1.35s" fill="freeze" path="M54 14 H240 V41"/></circle>
+      <circle class="command-ball" r="4"><animateMotion id="commandMotion-${id}-0" begin="indefinite" dur="1.15s" fill="freeze" path="M54 2 V14 H80 V41"/></circle>
+      <circle class="command-ball" r="4"><animateMotion id="commandMotion-${id}-1" begin="indefinite" dur="1.35s" fill="freeze" path="M54 14 H240 V41"/></circle>
     </svg>`;
 }
 
