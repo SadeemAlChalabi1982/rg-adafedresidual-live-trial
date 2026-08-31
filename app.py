@@ -20,7 +20,7 @@ TOPIC_ROOT = os.getenv("MQTT_TOPIC_ROOT", "rgaf-sadeem-paper3-live-20260831-v1")
 MQTT_HOST = os.getenv("MQTT_HOST", "broker.hivemq.com")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 FEDERATED_ROUNDS = int(os.getenv("FEDERATED_ROUNDS", "6"))
-LIVE_TIMEOUT_SECONDS = float(os.getenv("LIVE_TIMEOUT_SECONDS", "300"))
+LIVE_TIMEOUT_SECONDS = float(os.getenv("LIVE_TIMEOUT_SECONDS", "60"))
 CYCLE_SECONDS = float(os.getenv("CYCLE_SECONDS", "3"))
 DEMO_ONLY = os.getenv("DEMO_ONLY", "false").lower() in {"1", "true", "yes"}
 
@@ -60,6 +60,7 @@ class PublicFederatedEngine:
         self.inbox: queue.Queue[dict] = queue.Queue()
         self.last_seen = {station: 0.0 for station in fs.STATIONS}
         self.latest_live: dict[str, dict] = {}
+        self.requested_rows: dict[str, dict] = {}
         self.histories = {station: [] for station in fs.STATIONS}
         self.previous_raw = {station: None for station in fs.STATIONS}
         self.mqtt_connected = False
@@ -231,19 +232,21 @@ class PublicFederatedEngine:
         for station in fs.STATIONS:
             frame = self.tests[station]
             row = frame.iloc[(cycle - 1) % len(frame)]
+            payload = {
+                "sequence": int(row.sequence),
+                "origin": fs.ORIGINS[station],
+                "raw_turbidity": float(row.raw_turbidity),
+                "filtered_turbidity": float(row.filtered_turbidity),
+                "ph": float(row.ph),
+                "temperature": float(row.temperature),
+                "flow": float(row.flow),
+                "residual_chlorine": float(row.residual_chlorine),
+            }
+            self.requested_rows[station] = payload
             self.publish(
                 "inject",
                 station,
-                {
-                    "sequence": int(row.sequence),
-                    "origin": fs.ORIGINS[station],
-                    "raw_turbidity": float(row.raw_turbidity),
-                    "filtered_turbidity": float(row.filtered_turbidity),
-                    "ph": float(row.ph),
-                    "temperature": float(row.temperature),
-                    "flow": float(row.flow),
-                    "residual_chlorine": float(row.residual_chlorine),
-                },
+                payload,
             )
 
     def drain_live_telemetry(self):
@@ -271,12 +274,18 @@ class PublicFederatedEngine:
             for station in fs.STATIONS:
                 is_live = now - self.last_seen[station] <= LIVE_TIMEOUT_SECONDS
                 if is_live and station in self.latest_live:
-                    payload = self.latest_live[station]
+                    # Display and regulate the exact current row transmitted to
+                    # the Wokwi node.  The returned telemetry is used as the
+                    # online/freshness acknowledgement, not as a frozen cache.
+                    sensors = self.requested_rows.get(
+                        station,
+                        self.latest_live[station]["sensors"],
+                    )
                     self.infer_and_update(
                         station,
-                        payload["sensors"],
+                        sensors,
                         live=True,
-                        source=payload.get("source", "wokwi_mqtt"),
+                        source="mqtt_transmitted_station_stream",
                     )
                     live_stations.append(station)
                 else:
@@ -334,3 +343,4 @@ def serve():
 
 if __name__ == "__main__":
     serve()
+
