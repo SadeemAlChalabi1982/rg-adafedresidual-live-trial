@@ -3,7 +3,7 @@ import json
 import network
 import time
 
-from mqtt_simple import MQTTClient
+from umqtt.simple import MQTTClient
 
 
 TOPIC_ROOT = "rgaf-sadeem-paper3-live-20260831-v1"
@@ -160,7 +160,7 @@ chlorine_led.value(1)
 
 client = MQTTClient(("rgaf-20260830-" + station).encode(), MQTT_HOST, port=MQTT_PORT, keepalive=30)
 client.set_callback(on_message)
-client.connect(clean_session=True, timeout=15)
+client.connect(clean_session=True)
 print("MQTT connected", MQTT_HOST, station)
 for name in ("inject", "command", "weights"):
     client.subscribe(topic(name), qos=0)
@@ -177,7 +177,7 @@ while True:
         if not injected and time.ticks_diff(time.ticks_ms(), last_local) >= 1500:
             last_local = time.ticks_ms()
             sequence += 1
-            for name in sensors:
+            for name in ADC_PINS:
                 sensors[name] = adc_value(name)
             sensors["raw_delta"] = 0.0
             publish_telemetry("wokwi_electrical_sensor_emulator")
