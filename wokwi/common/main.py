@@ -1,6 +1,8 @@
 from machine import ADC, I2C, PWM, Pin
+import ds18x20
 import json
 import network
+import onewire
 import time
 
 from umqtt.simple import MQTTClient
@@ -18,10 +20,10 @@ ADC_PINS = {
     "raw_turbidity": 34,
     "filtered_turbidity": 35,
     "ph": 32,
-    "temperature": 33,
     "flow": 36,
     "residual_chlorine": 39,
 }
+TEMPERATURE_PIN = 33
 
 # Visible boot diagnostics on the physical diagram:
 # orange = firmware running, blue = Wi-Fi ready, green = MQTT ready.
@@ -68,8 +70,6 @@ def adc_value(name):
         return 0.03 + 99.97 * ratio
     if name == "ph":
         return 4.0 + 6.0 * ratio
-    if name == "temperature":
-        return 5.0 + 35.0 * ratio
     if name == "flow":
         return 300.0 + 1700.0 * ratio
     return 0.02 + 0.78 * ratio
@@ -80,14 +80,31 @@ def servo(pwm, percent):
     pwm.duty_ns(int(500 + 19 * percent) * 1000)
 
 
-def set_pumps(alum, chlorine):
+def set_pumps(alum, chlorine, animate=False):
     global alum_percent, chlorine_percent
     alum_percent = min(100.0, max(0.0, float(alum)))
     chlorine_percent = min(100.0, max(0.0, float(chlorine)))
+    if animate:
+        alum_excursion = alum_percent + (12 if alum_percent <= 88 else -12)
+        chlorine_excursion = chlorine_percent + (12 if chlorine_percent <= 88 else -12)
+        servo(alum_pwm, alum_excursion)
+        servo(chlorine_pwm, chlorine_excursion)
+        alum_led.value(1)
+        chlorine_led.value(1)
+        time.sleep_ms(160)
     servo(alum_pwm, alum_percent)
     servo(chlorine_pwm, chlorine_percent)
-    alum_led.value(alum_percent > 1)
-    chlorine_led.value(chlorine_percent > 1)
+    if animate:
+        for _ in range(2):
+            alum_led.value(0)
+            chlorine_led.value(0)
+            time.sleep_ms(80)
+            alum_led.value(alum_percent > 1)
+            chlorine_led.value(chlorine_percent > 1)
+            time.sleep_ms(80)
+    else:
+        alum_led.value(alum_percent > 1)
+        chlorine_led.value(chlorine_percent > 1)
     alarm_led.value(max(alum_percent, chlorine_percent) >= 90)
 
 
@@ -126,7 +143,7 @@ def on_message(received, body):
             display("SENSE")
         elif received == topic("command"):
             global_round = int(doc.get("global_round", global_round))
-            set_pumps(doc.get("alum_percent", 0), doc.get("chlorine_percent", 0))
+            set_pumps(doc.get("alum_percent", 0), doc.get("chlorine_percent", 0), animate=True)
             display("REGULATE")
             print("PUMPS A=%.1f%% C=%.1f%%" % (alum_percent, chlorine_percent))
         elif received == topic("weights"):
@@ -194,6 +211,9 @@ for adc in adcs.values():
     except AttributeError:
         pass
 sensors = {name: 0.0 for name in ADC_PINS}
+sensors["temperature"] = 25.0
+temperature_bus = ds18x20.DS18X20(onewire.OneWire(Pin(TEMPERATURE_PIN)))
+temperature_roms = temperature_bus.scan()
 alum_pwm, chlorine_pwm = PWM(Pin(25), freq=50), PWM(Pin(26), freq=50)
 online_led, alum_led = Pin(2, Pin.OUT), Pin(27, Pin.OUT)
 chlorine_led, alarm_led = Pin(14, Pin.OUT), Pin(13, Pin.OUT)
@@ -208,6 +228,8 @@ set_pumps(0, 0)
 
 last_local = time.ticks_ms()
 last_status = time.ticks_ms()
+last_heartbeat = time.ticks_ms()
+heartbeat_state = 1
 retry_ms = RECONNECT_MIN_MS
 while True:
     if client is None:
@@ -232,12 +254,20 @@ while True:
             sequence += 1
             for name in ADC_PINS:
                 sensors[name] = adc_value(name)
+            if temperature_roms:
+                temperature_bus.convert_temp()
+                time.sleep_ms(750)
+                sensors["temperature"] = temperature_bus.read_temp(temperature_roms[0])
             sensors["raw_delta"] = 0.0
             publish_telemetry("wokwi_electrical_sensor_emulator")
             display("LOCAL ADC")
         if time.ticks_diff(time.ticks_ms(), last_status) >= STATUS_INTERVAL_MS:
             client.publish(topic("status"), b"online", retain=True, qos=0)
             last_status = time.ticks_ms()
+        if time.ticks_diff(time.ticks_ms(), last_heartbeat) >= 650:
+            heartbeat_state = 0 if heartbeat_state else 1
+            online_led.value(heartbeat_state)
+            last_heartbeat = time.ticks_ms()
         time.sleep_ms(20)
     except Exception as error:
         print("LINK LOST", error)
