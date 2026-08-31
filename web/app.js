@@ -39,11 +39,25 @@ function sensorMotionMarkup(id) {
 function commandMarkup(id) {
   return `<div class="command-caption"><span>ESP32 PWM OUT</span><span>commands to dosing pumps</span></div>
     <svg class="command-svg" viewBox="0 0 320 41" preserveAspectRatio="none" aria-hidden="true">
-      <path class="command-wire" d="M54 2 V14 H92 V35 H158"/>
-      <path class="command-wire" d="M54 2 V14 H228 V35 H294"/>
-      <circle class="command-ball" r="5"><animateMotion id="commandMotion-${id}-0" begin="indefinite" dur="1.15s" fill="freeze" path="M54 2 V14 H92 V35 H158"/></circle>
-      <circle class="command-ball" r="5"><animateMotion id="commandMotion-${id}-1" begin="indefinite" dur="1.35s" fill="freeze" path="M54 2 V14 H228 V35 H294"/></circle>
+      <path class="command-wire" d="M54 2 V14 H80 V41"/>
+      <path class="command-wire" d="M54 14 H240 V41"/>
+      <circle class="command-node source" cx="54" cy="2" r="5"/>
+      <circle class="command-node target" cx="80" cy="39" r="4"/>
+      <circle class="command-node target" cx="240" cy="39" r="4"/>
+      <circle class="command-ball" r="5"><animateMotion id="commandMotion-${id}-0" begin="indefinite" dur="1.15s" fill="freeze" path="M54 2 V14 H80 V41"/></circle>
+      <circle class="command-ball" r="5"><animateMotion id="commandMotion-${id}-1" begin="indefinite" dur="1.35s" fill="freeze" path="M54 14 H240 V41"/></circle>
     </svg>`;
+}
+
+function setChangingText(element, text) {
+  if (!element || element.textContent === text) return;
+  const previous = element.textContent;
+  element.textContent = text;
+  if (previous && previous !== '—' && previous !== '0.0%') {
+    element.classList.remove('value-flash');
+    void element.offsetWidth;
+    element.classList.add('value-flash');
+  }
 }
 
 function stationShell(id, station) {
@@ -86,7 +100,7 @@ function updateStation(id, station) {
   document.querySelector(`#${id}-name`).textContent = station.name || id;
   document.querySelector(`#${id}-origin`).textContent = station.origin || '—';
   Object.keys(sensorDefs).forEach(key => {
-    document.querySelector(`#${id}-${key}`).textContent = fmt(station.sensors?.[key], key);
+    setChangingText(document.querySelector(`#${id}-${key}`), fmt(station.sensors?.[key], key));
   });
   const progress = Math.max(0, Math.min(100, Number(station.local_progress || 0)));
   document.querySelector(`#${id}-phase`).textContent = station.phase || 'Waiting';
@@ -97,7 +111,7 @@ function updateStation(id, station) {
     const pump = document.querySelector(`#${id}-pump-${key}`);
     pump.style.setProperty('--power', Math.max(.12, value / 100));
     pump.classList.toggle('high', value >= 90);
-    document.querySelector(`#${id}-${label}`).textContent = `${value.toFixed(1)}%`;
+    setChangingText(document.querySelector(`#${id}-${label}`), `${value.toFixed(1)}%`);
   });
   document.querySelector(`#${id}-mode`).textContent = `${station.control_mode || 'Awaiting command'} · H6 ${fmt(station.forecast, 'raw_turbidity')} NTU · ${Number(station.latency_ms || 0).toFixed(1)} ms`;
   const link = document.querySelector(`#${id}-link`);
@@ -209,7 +223,10 @@ async function refresh() {
     ensureStations(state.stations || {});
     order.forEach(id => updateStation(id, state.stations?.[id] || {}));
     document.querySelector('#events').innerHTML = state.events.length ? state.events.map(event => `<div class="event"><time>${esc(event.time)}</time><span class="badge">${esc(event.kind).toUpperCase()}</span><span>${event.station ? `${esc(event.station)}: ` : ''}${esc(event.text)}</span></div>`).join('') : '<div class="empty">Waiting for events…</div>';
-    document.querySelector('#deploymentDisclosure').textContent = `Execution mode: ${mode}. ${state.deployment?.accuracy_scope || '—'}. Transport: ${transport}. Austin and Tongji use published-field streams; Virtual is explicitly disclosed as a digital twin. The moving packets visualize the ordered data path while the numbers are refreshed from the current server state.`;
+    const sampleDetail = isLive
+      ? 'The displayed figures are the exact current MQTT samples transmitted to the three acknowledged Wokwi nodes.'
+      : 'The displayed figures advance through the explicitly disclosed verified external-validation trace while Wokwi is unavailable.';
+    document.querySelector('#deploymentDisclosure').textContent = `Execution mode: ${mode}. ${state.deployment?.accuracy_scope || '—'}. Transport: ${transport}. ${sampleDetail} Austin and Tongji use published-field streams; Virtual is explicitly disclosed as a digital twin.`;
     renderSummary(state.summary || {});
   } catch (error) {
     document.querySelector('#runState').textContent = 'OFFLINE';
@@ -218,3 +235,4 @@ async function refresh() {
 
 refresh().then(() => runStage(0));
 setInterval(refresh, 700);
+
