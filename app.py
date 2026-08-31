@@ -20,7 +20,7 @@ TOPIC_ROOT = os.getenv("MQTT_TOPIC_ROOT", "rgaf-sadeem-paper3-live-20260831-v1")
 MQTT_HOST = os.getenv("MQTT_HOST", "broker.hivemq.com")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 FEDERATED_ROUNDS = int(os.getenv("FEDERATED_ROUNDS", "6"))
-LIVE_TIMEOUT_SECONDS = float(os.getenv("LIVE_TIMEOUT_SECONDS", "12"))
+LIVE_TIMEOUT_SECONDS = float(os.getenv("LIVE_TIMEOUT_SECONDS", "300"))
 CYCLE_SECONDS = float(os.getenv("CYCLE_SECONDS", "3"))
 DEMO_ONLY = os.getenv("DEMO_ONLY", "false").lower() in {"1", "true", "yes"}
 
