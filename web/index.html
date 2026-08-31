@@ -3,54 +3,88 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>RG-AdaFedResidual Public Federated Trial</title>
-  <style>
-    :root{--bg:#f4f7fb;--panel:#fff;--ink:#142033;--muted:#65748b;--line:#d9e2ef;--blue:#1687ff;--violet:#8a56ff;--green:#12a86b;--red:#e53e4d;--amber:#e99a14;--shadow:0 18px 50px rgba(28,45,75,.1)}
-    *{box-sizing:border-box} body{margin:0;background:radial-gradient(circle at 15% 0,#eaf4ff,transparent 34%),var(--bg);font:16px/1.45 Inter,Segoe UI,Arial,sans-serif;color:var(--ink)}
-    button{font:inherit}.page{max-width:1510px;margin:auto;padding:28px}.topbar{display:flex;justify-content:space-between;gap:20px;align-items:center;margin-bottom:20px}.title h1{font-size:clamp(23px,2vw,34px);margin:0 0 5px;letter-spacing:-.03em}.title p{margin:0;color:var(--muted);font-size:15px}.run{display:flex;align-items:center;gap:10px;background:var(--panel);padding:10px 14px;border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow)}.live-dot{width:12px;height:12px;border-radius:50%;background:#94a3b8}.live-dot.on{background:var(--green);box-shadow:0 0 0 7px rgba(18,168,107,.13)}.live-dot.fallback{background:var(--amber);box-shadow:0 0 0 7px rgba(233,154,20,.13)}.round{font-weight:800;color:var(--violet)}
-    .architecture{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:26px;box-shadow:var(--shadow);min-height:710px;overflow:hidden;padding:30px 26px}.architecture:before{content:"";position:absolute;inset:0;background-image:linear-gradient(rgba(22,135,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(22,135,255,.035) 1px,transparent 1px);background-size:28px 28px;pointer-events:none}.arch-label{position:relative;display:flex;justify-content:space-between;align-items:center;z-index:3}.eyebrow{text-transform:uppercase;letter-spacing:.13em;font-size:12px;font-weight:800;color:var(--blue)}.phase{font-weight:700;color:var(--muted)}
-    .cloud-wrap{height:250px;display:flex;justify-content:center;align-items:center;position:relative;z-index:3}.cloud{position:relative;width:220px;height:160px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;background:linear-gradient(145deg,#f8f5ff,#e9ddff);border:2px solid #a77aff;border-radius:48% 52% 44% 46%;box-shadow:0 0 0 12px rgba(138,86,255,.08),0 20px 46px rgba(106,61,204,.18)}.cloud:before,.cloud:after{content:"";position:absolute;background:inherit;border:2px solid #a77aff;border-bottom:0}.cloud:before{width:72px;height:54px;border-radius:50% 50% 0 0;top:-25px;left:31px}.cloud:after{width:92px;height:70px;border-radius:50% 50% 0 0;top:-39px;right:22px}.cloud>*{position:relative;z-index:2}.cloud .icon{font-size:27px}.cloud strong{font-size:20px;margin:3px}.cloud small{color:#6a4ba5}.cloud .hash{font:12px ui-monospace,monospace;margin-top:7px;color:#3d2867}.cloud.aggregating{animation:cloudPulse 2.6s ease-in-out infinite}@keyframes cloudPulse{50%{box-shadow:0 0 0 22px rgba(138,86,255,.05),0 22px 60px rgba(106,61,204,.24)}}
-    .links{position:absolute;inset:165px 5% auto;height:320px;width:90%;z-index:1;overflow:visible}.link-base{fill:none;stroke:#d7dbea;stroke-width:4}.link-up,.link-down{fill:none;stroke-width:3;stroke-dasharray:10 11;stroke-linecap:round}.link-up{stroke:var(--violet)}.link-down{stroke:var(--blue);stroke-dashoffset:10}.moving .link-up{animation:up 4s linear infinite}.moving .link-down{animation:down 4.7s linear infinite}@keyframes up{to{stroke-dashoffset:-42}}@keyframes down{to{stroke-dashoffset:62}}
-    .stations{position:relative;z-index:3;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-top:65px}.station{border:1px solid var(--line);border-top:5px solid var(--blue);background:rgba(255,255,255,.96);border-radius:22px;padding:18px;box-shadow:0 12px 30px rgba(35,51,78,.08);min-width:0;transition:.25s}.station.active{transform:translateY(-3px);box-shadow:0 18px 42px rgba(22,135,255,.14)}.station-head{display:flex;justify-content:space-between;gap:10px;align-items:start;border-bottom:1px solid #e8edf4;padding-bottom:12px}.station h2{font-size:19px;margin:0 0 3px}.origin{font-size:11px;letter-spacing:.08em;color:var(--muted);font-weight:800}.online{display:inline-flex;align-items:center;gap:6px;color:var(--green);font-size:12px;font-weight:800}.online:before{content:"";width:8px;height:8px;border-radius:50%;background:currentColor}.hardware{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:7px;padding:14px 0 11px}.device{background:#f5f8fc;border:1px solid #dce5f0;border-radius:13px;text-align:center;padding:10px 5px}.device b{display:block;font-size:13px}.device small{font-size:10px;color:var(--muted)}.arrow{color:var(--blue);font-weight:900}.local-box{background:#f7f3ff;border:1px solid #e0d3ff;border-radius:13px;padding:9px 11px;margin-bottom:12px}.local-row{display:flex;justify-content:space-between;font-size:12px;font-weight:700}.track{height:7px;background:#e8e0f7;border-radius:20px;margin-top:7px;overflow:hidden}.track span{display:block;height:100%;width:0;background:linear-gradient(90deg,#9d68ff,#6c3be7);transition:width .55s;border-radius:inherit}.sensors{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}.sensor{background:#f6f9fc;border:1px solid #e1e8f1;border-radius:12px;padding:8px 5px;text-align:center;min-width:0}.sensor b{display:block;font-size:15px;white-space:nowrap}.sensor small{display:block;font-size:10px;color:var(--muted);white-space:nowrap}.sensor .tag{font-size:9px;color:#4b6a8d}.pumps-title{text-align:center;margin:13px 0 7px;font-weight:800}.pumps{display:grid;grid-template-columns:1fr 1fr;gap:9px}.pump{position:relative;display:flex;align-items:center;gap:9px;padding:10px;border:1px solid #cce8dc;border-radius:14px;background:#f1fbf6;overflow:hidden;transition:.4s}.pump:before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 20% 50%,rgba(18,168,107,.24),transparent 52%);opacity:var(--power,.2);transition:.5s}.pump.high{border-color:#f0a5ad;background:#fff2f3;box-shadow:0 0 23px rgba(229,62,77,.22);animation:danger 1.8s ease-in-out infinite}.pump.high:before{background:radial-gradient(circle at 20% 50%,rgba(229,62,77,.42),transparent 55%)}@keyframes danger{50%{box-shadow:0 0 38px rgba(229,62,77,.35)}}.pump>*{position:relative}.pump-icon{width:31px;height:31px;border-radius:50%;background:var(--green);color:#fff;display:grid;place-items:center;font-size:17px}.pump.high .pump-icon{background:var(--red)}.pump b{font-size:15px}.pump small{font-size:10px;color:var(--muted);display:block}.control-mode{text-align:center;color:var(--muted);font-size:11px;margin-top:8px}
-    .open-node{display:block;margin:0 0 12px;padding:8px 10px;border-radius:11px;background:#edf6ff;border:1px solid #c8e1fb;color:#0969b7;text-align:center;text-decoration:none;font-size:12px;font-weight:800}.open-node.pending{color:var(--muted);background:#f7f8fa;border-color:#e1e5ea}
-    .below{display:grid;grid-template-columns:1.25fr .75fr;gap:18px;margin-top:18px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:22px;padding:20px;box-shadow:var(--shadow)}.panel h3{margin:0 0 14px;font-size:18px}.stack{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.stack div{padding:11px;background:#f6f8fb;border-radius:12px;border:1px solid #e3e8ef}.stack b{display:block;font-size:12px}.stack small{font-size:10px;color:var(--muted)}.events{max-height:180px;overflow:auto}.event{display:flex;gap:10px;border-bottom:1px solid #edf1f5;padding:7px 0;font-size:12px}.event time{color:var(--muted);font-family:ui-monospace,monospace}.event .badge{color:var(--blue);font-weight:800}.summary{margin-top:18px}.summary table{border-collapse:collapse;width:100%;font-size:13px}.summary th,.summary td{text-align:left;padding:9px;border-bottom:1px solid #e6ebf1}.summary th{font-size:11px;color:var(--muted);text-transform:uppercase}.empty{text-align:center;color:var(--muted);padding:15px}.disclosure{margin-top:12px;padding:10px 13px;border-radius:12px;background:#fff9e8;border:1px solid #f4dfa1;color:#6a5620;font-size:12px}
-    @media(max-width:1050px){.architecture{min-height:0}.links{display:none}.stations{grid-template-columns:1fr;margin-top:10px}.cloud-wrap{height:235px}.below{grid-template-columns:1fr}.stack{grid-template-columns:1fr 1fr}}@media(max-width:600px){.page{padding:12px}.topbar{align-items:flex-start;flex-direction:column}.architecture{padding:18px 12px}.sensors{grid-template-columns:1fr 1fr}.stack{grid-template-columns:1fr}.run{width:100%}}
-  </style>
+  <meta name="description" content="Interactive three-station RG-AdaFedResidual federated water-treatment laboratory.">
+  <title>RG-AdaFedResidual Interactive Federated Laboratory</title>
+  <link rel="stylesheet" href="styles.css?v=3">
 </head>
 <body>
 <main class="page">
   <header class="topbar">
-    <div class="title"><h1>RG-AdaFedResidual Public Federated Trial</h1><p>Three Wokwi ESP32 stations · public MQTT · Raspberry Pi edge clients · executable federated cloud</p></div>
-    <div class="run"><span id="liveDot" class="live-dot"></span><strong id="runState">Connecting</strong><span id="transportState">LOCAL</span><span class="round">Round <span id="round">0</span>/<span id="maxRound">0</span> · Live cycle <span id="cycle">0</span></span></div>
+    <div class="title">
+      <h1>RG-AdaFedResidual Interactive Federated Laboratory</h1>
+      <p>Live three-station water-quality sensing, local learning, federated aggregation and closed-loop dosing</p>
+    </div>
+    <div class="run">
+      <span id="liveDot" class="live-dot"></span><strong id="runState">Connecting</strong>
+      <span id="transportState">MQTT</span>
+      <span class="round">Round <span id="round">0</span>/<span id="maxRound">0</span> · Cycle <span id="cycle">0</span></span>
+    </div>
   </header>
-  <section id="architecture" class="architecture moving">
-    <div class="arch-label"><span class="eyebrow">Live system architecture</span><span id="phase" class="phase">Ready</span></div>
-    <div class="cloud-wrap"><div id="cloud" class="cloud"><span class="icon">☁</span><strong>Federated Cloud</strong><small id="cloudStatus">Waiting</small><span class="hash">weights: <span id="hash">—</span></span></div></div>
-    <svg class="links" viewBox="0 0 1200 320" preserveAspectRatio="none" aria-hidden="true">
-      <path class="link-base" d="M600 30 C520 110 250 85 160 300"/><path class="link-base" d="M600 30 C600 125 600 175 600 300"/><path class="link-base" d="M600 30 C680 110 950 85 1040 300"/>
-      <path class="link-up" d="M160 300 C250 85 520 110 600 30"/><path class="link-up" d="M600 300 C600 175 600 125 600 30"/><path class="link-up" d="M1040 300 C950 85 680 110 600 30"/>
-      <path class="link-down" d="M600 30 C520 110 250 85 160 300"/><path class="link-down" d="M600 30 C600 125 600 175 600 300"/><path class="link-down" d="M600 30 C680 110 950 85 1040 300"/>
+
+  <div class="motion-controls">
+    <button id="motionToggle" type="button">Pause motion</button>
+    <button id="replay" type="button">Replay sequence</button>
+    <span class="legend"><i class="b"></i>sensor data<i class="v"></i>local weights<i class="g"></i>global update<i class="r"></i>pump command</span>
+  </div>
+
+  <nav id="timeline" class="timeline" aria-label="Federated execution stages">
+    <span class="step" data-key="sensor" data-n="1" style="--stage:#1787ff">Sensor sampling</span>
+    <span class="step" data-key="edge" data-n="2" style="--stage:#1787ff">ESP32 acquisition</span>
+    <span class="step" data-key="local" data-n="3" style="--stage:#8954ff">Local learning</span>
+    <span class="step" data-key="upload" data-n="4" style="--stage:#8954ff">Upload weights</span>
+    <span class="step" data-key="aggregate" data-n="5" style="--stage:#8954ff">Cloud aggregation</span>
+    <span class="step" data-key="broadcast" data-n="6" style="--stage:#10ad72">Global broadcast</span>
+    <span class="step" data-key="actuate" data-n="7" style="--stage:#ed4658">Pump actuation</span>
+  </nav>
+
+  <section id="architecture" class="architecture" data-stage="sensor">
+    <div class="arch-label">
+      <span class="eyebrow">Live visual data path</span>
+      <span class="phase">Visual stage: <strong id="visualStage">Sensor sampling</strong></span>
+    </div>
+    <div class="cloud-wrap">
+      <div id="cloud" class="cloud">
+        <span class="icon">☁</span><strong>Federated Cloud</strong>
+        <small id="cloudStatus">Waiting</small>
+        <span class="hash">checkpoint: <span id="hash">—</span></span>
+      </div>
+    </div>
+
+    <svg class="global-links" viewBox="0 0 1200 315" preserveAspectRatio="none" aria-hidden="true">
+      <path class="global-base" d="M600 24 C520 105 245 82 155 305"/>
+      <path class="global-base" d="M600 24 C600 115 600 170 600 305"/>
+      <path class="global-base" d="M600 24 C680 105 955 82 1045 305"/>
+      <path class="global-up" d="M155 305 C245 82 520 105 600 24"/>
+      <path class="global-up" d="M600 305 C600 170 600 115 600 24"/>
+      <path class="global-up" d="M1045 305 C955 82 680 105 600 24"/>
+      <path class="global-down" d="M600 24 C520 105 245 82 155 305"/>
+      <path class="global-down" d="M600 24 C600 115 600 170 600 305"/>
+      <path class="global-down" d="M600 24 C680 105 955 82 1045 305"/>
+      <circle class="global-ball upload" r="7"><animateMotion id="uploadMotion-0" begin="indefinite" dur="1.15s" fill="freeze" path="M155 305 C245 82 520 105 600 24"/></circle>
+      <circle class="global-ball upload" r="7"><animateMotion id="uploadMotion-1" begin="indefinite" dur="1.15s" fill="freeze" path="M600 305 C600 170 600 115 600 24"/></circle>
+      <circle class="global-ball upload" r="7"><animateMotion id="uploadMotion-2" begin="indefinite" dur="1.15s" fill="freeze" path="M1045 305 C955 82 680 105 600 24"/></circle>
+      <circle class="global-ball broadcast" r="7"><animateMotion id="broadcastMotion-0" begin="indefinite" dur="1.15s" fill="freeze" path="M600 24 C520 105 245 82 155 305"/></circle>
+      <circle class="global-ball broadcast" r="7"><animateMotion id="broadcastMotion-1" begin="indefinite" dur="1.15s" fill="freeze" path="M600 24 C600 115 600 170 600 305"/></circle>
+      <circle class="global-ball broadcast" r="7"><animateMotion id="broadcastMotion-2" begin="indefinite" dur="1.15s" fill="freeze" path="M600 24 C680 105 955 82 1045 305"/></circle>
     </svg>
     <div id="stations" class="stations"></div>
   </section>
+
   <section class="below">
-    <div class="panel"><h3>Physical and computing stack at every station</h3><div class="stack"><div><b>6 sensing channels</b><small>Raw/filtered turbidity, pH, temperature, flow, residual chlorine</small></div><div><b>ESP32-WROOM-32E</b><small>ADC acquisition, MQTT telemetry, PWM pump commands</small></div><div><b>Raspberry Pi 4B</b><small>Preprocessing, local training, inference and safety gate</small></div><div><b>2 metering pumps</b><small>Alum and chlorine; red state begins at ≥90% command</small></div></div><div id="deploymentDisclosure" class="disclosure">Loading checkpoint and transport provenance…</div></div>
+    <div class="panel">
+      <h3>Physical and computing stack</h3>
+      <div class="stack">
+        <div><b>Six sensing channels</b><small>Turbidity, pH, DS18B20, flow and residual chlorine</small></div>
+        <div><b>ESP32-WROOM-32E</b><small>ADC acquisition, MQTT telemetry and PWM commands</small></div>
+        <div><b>Raspberry Pi 4B client</b><small>Preprocessing, local learning, inference and safety gate</small></div>
+        <div><b>Two metering pumps</b><small>Alum and chlorine dosing with animated response</small></div>
+      </div>
+      <div id="deploymentDisclosure" class="disclosure">Loading execution provenance…</div>
+    </div>
     <div class="panel"><h3>Execution log</h3><div id="events" class="events"><div class="empty">Waiting for events…</div></div></div>
   </section>
-  <section class="panel summary"><h3>Measured run summary</h3><div id="summary" class="empty">Results will appear after the live regulation cycles finish.</div></section>
+  <section class="panel summary"><h3>Measured run summary</h3><div id="summary" class="empty">Results will appear after regulation cycles finish.</div></section>
 </main>
-<script>
-const order=['austin','tongji','virtual'];
-const labels={raw_turbidity:['Raw turb.','NTU'],filtered_turbidity:['Filtered','NTU'],ph:['pH','pH'],temperature:['Temp.','°C'],flow:['Flow','m³/h'],residual_chlorine:['Residual Cl','mg/L']};
-const fmt=(v,k)=>v==null?'—':(k==='flow'?Number(v).toFixed(0):Number(v).toFixed(2));
-function stationCard(id,s){
-  const sensors=Object.entries(labels).map(([k,l])=>`<div class="sensor"><b>${fmt(s.sensors?.[k],k)}</b><small>${l[0]} · ${l[1]}</small><span class="tag">${['filtered_turbidity','flow','residual_chlorine'].includes(k)?'digital twin':'sensor stream'}</span></div>`).join('');
-  const pump=(key,name)=>{const v=Number(s.pumps?.[key]||0),high=v>=90;return `<div class="pump ${high?'high':''}" style="--power:${Math.max(.12,v/100)}"><span class="pump-icon">${key==='alum'?'◈':'⌁'}</span><span><b>${v.toFixed(1)}%</b><small>${name} pump</small></span></div>`};
-  const open=s.wokwi_url?`<a class="open-node" href="${s.wokwi_url}" target="_blank" rel="noopener">Open live Wokwi station ↗</a>`:`<span class="open-node pending">Wokwi station link pending publication</span>`;
-  return `<article class="station ${s.online?'active':''}"><div class="station-head"><div><h2>${s.name||id}</h2><div class="origin">${s.origin||'—'}</div></div><span class="online">${s.online?'ONLINE':'OFFLINE'}</span></div><div class="hardware"><div class="device"><b>ESP32</b><small>Sensors + pumps</small></div><span class="arrow">→</span><div class="device"><b>Raspberry Pi 4B</b><small>Local FL client</small></div></div>${open}<div class="local-box"><div class="local-row"><span>${s.phase||'Waiting'}</span><span>${Math.round(s.local_progress||0)}%</span></div><div class="track"><span style="width:${s.local_progress||0}%"></span></div></div><div class="sensors">${sensors}</div><div class="pumps-title">Metering pumps</div><div class="pumps">${pump('alum','Alum')}${pump('chlorine','Chlorine')}</div><div class="control-mode">${s.control_mode||'Awaiting control command'} · H6 forecast ${fmt(s.forecast,'raw_turbidity')} NTU · ${Number(s.latency_ms||0).toFixed(1)} ms</div></article>`}
-function renderSummary(summary){const vals=order.map(k=>summary[k]).filter(Boolean);if(!vals.length)return;document.querySelector('#summary').outerHTML=`<div id="summary"><table><thead><tr><th>Station</th><th>Origin</th><th>Cycles</th><th>Turbidity compliant</th><th>Chlorine compliant</th><th>Joint compliant</th><th>Mean alum pump</th><th>Mean chlorine pump</th></tr></thead><tbody>${vals.map(r=>`<tr><td><b>${r.station}</b></td><td>${r.origin}</td><td>${r.n}</td><td>${Number(r.turbidity_compliance_pct).toFixed(1)}%</td><td>${Number(r.chlorine_compliance_pct).toFixed(1)}%</td><td>${Number(r.joint_compliance_pct).toFixed(1)}%</td><td>${Number(r.mean_alum_pct).toFixed(1)}%</td><td>${Number(r.mean_chlorine_pct).toFixed(1)}%</td></tr>`).join('')}</tbody></table><div class="disclosure">Forecast fidelity values are saved separately in station_summary.csv. They compare this live deployment twin with an exported reference forecast; they are not presented here as accuracy against future laboratory ground truth.</div></div>`}
-async function refresh(){try{const r=await fetch('/api/state?'+Date.now(),{cache:'no-store'}),s=await r.json(),mode=s.deployment?.live_mode||'INITIALIZING',isLive=mode==='LIVE MQTT',dot=document.querySelector('#liveDot');dot.classList.toggle('on',isLive);dot.classList.toggle('fallback',!isLive&&s.running);document.querySelector('#runState').textContent=mode;const transport=s.deployment?.transport||'PUBLIC MQTT',transportDetail=s.broker?.connected?'BROKER CONNECTED':'BROKER STANDBY';document.querySelector('#transportState').textContent=`${transport} · ${transportDetail}`;document.querySelector('#round').textContent=s.round;document.querySelector('#maxRound').textContent=s.max_rounds;document.querySelector('#cycle').textContent=s.live_cycle||0;document.querySelector('#phase').textContent=s.phase;document.querySelector('#cloudStatus').textContent=s.cloud.status;document.querySelector('#hash').textContent=s.cloud.weights_hash||'—';document.querySelector('#cloud').classList.toggle('aggregating',/Aggregat|ready|commands/.test(s.cloud.status));document.querySelector('#stations').innerHTML=order.map(id=>stationCard(id,s.stations[id]||{})).join('');document.querySelector('#events').innerHTML=s.events.length?s.events.map(e=>`<div class="event"><time>${e.time}</time><span class="badge">${e.kind.toUpperCase()}</span><span>${e.station?e.station+': ':''}${e.text}</span></div>`).join(''):'<div class="empty">Waiting for events…</div>';document.querySelector('#deploymentDisclosure').textContent=`Execution mode: ${mode}. ${s.deployment?.accuracy_scope||'—'}. Transport: ${transport}. Austin and Tongji are published-field streams; Virtual is explicitly disclosed as a digital twin. Cloud-hosted Python executes the Raspberry Pi client software; no physical Raspberry Pi board is claimed.`;renderSummary(s.summary||{});}catch(e){document.querySelector('#runState').textContent='OFFLINE'}}
-refresh();setInterval(refresh,550);
-</script>
+<script src="app.js?v=3"></script>
 </body>
 </html>
