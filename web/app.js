@@ -8,19 +8,25 @@ const sensorDefs = {
   residual_chlorine: ['Residual Cl₂', 'mg/L', '◌'],
 };
 const stages = [
-  { key: 'sensor', label: 'Sensor sampling', color: '#1787ff', duration: 1450 },
-  { key: 'edge', label: 'ESP32 acquisition', color: '#1787ff', duration: 1200 },
-  { key: 'local', label: 'Raspberry Pi local learning', color: '#8954ff', duration: 1450 },
-  { key: 'upload', label: 'Uploading local weights', color: '#8954ff', duration: 1350 },
-  { key: 'aggregate', label: 'Relation-guided aggregation', color: '#8954ff', duration: 1550 },
-  { key: 'broadcast', label: 'Broadcasting global update', color: '#10ad72', duration: 1450 },
-  { key: 'actuate', label: 'Applying dosing commands', color: '#ed4658', duration: 1900 },
+  { key: 'sensor', label: 'Sensor sampling', color: '#1787ff', duration: 1600 },
+  { key: 'edge', label: 'ESP32 acquisition', color: '#1787ff', duration: 850 },
+  { key: 'local', label: 'Raspberry Pi local learning', color: '#8954ff', duration: 1250 },
+  { key: 'upload', label: 'Uploading local weights', color: '#8954ff', duration: 1300 },
+  { key: 'aggregate', label: 'Relation-guided aggregation', color: '#8954ff', duration: 1200 },
+  { key: 'broadcast', label: 'Broadcasting global update', color: '#10ad72', duration: 1300 },
+  { key: 'actuate', label: 'Applying dosing commands', color: '#ed4658', duration: 2600 },
 ];
 
 let stageIndex = 0;
 let motionPaused = false;
 let stageTimer = null;
 let stageTimers = [];
+let latestState = null;
+let queuedState = null;
+let currentCycleState = null;
+let activeCycle = null;
+let cycleRunning = false;
+let cycleToken = 0;
 
 const fmt = (value, key) => value == null ? '—' : (key === 'flow' ? Number(value).toFixed(0) : Number(value).toFixed(2));
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({
@@ -89,28 +95,13 @@ function ensureStations(stations) {
   host.innerHTML = order.map(id => stationShell(id, stations[id] || {})).join('');
 }
 
-function updateStation(id, station) {
+function updateStationStatus(id, station) {
   const card = document.querySelector(`#station-${id}`);
   if (!card) return;
   card.classList.toggle('active', Boolean(station.online));
   document.querySelector(`#${id}-online`).textContent = station.online ? 'ONLINE' : 'OFFLINE';
   document.querySelector(`#${id}-name`).textContent = station.name || id;
   document.querySelector(`#${id}-origin`).textContent = station.origin || '—';
-  Object.keys(sensorDefs).forEach(key => {
-    setChangingText(document.querySelector(`#${id}-${key}`), fmt(station.sensors?.[key], key));
-  });
-  const progress = Math.max(0, Math.min(100, Number(station.local_progress || 0)));
-  document.querySelector(`#${id}-phase`).textContent = station.phase || 'Waiting';
-  document.querySelector(`#${id}-progressText`).textContent = `${Math.round(progress)}%`;
-  document.querySelector(`#${id}-progress`).style.width = `${progress}%`;
-  [['alum', 'alum'], ['chlorine', 'chlorine']].forEach(([key, label]) => {
-    const value = Number(station.pumps?.[key] || 0);
-    const pump = document.querySelector(`#${id}-pump-${key}`);
-    pump.style.setProperty('--power', Math.max(.12, value / 100));
-    pump.classList.toggle('high', value >= 90);
-    setChangingText(document.querySelector(`#${id}-${label}`), `${value.toFixed(1)}%`);
-  });
-  document.querySelector(`#${id}-mode`).textContent = `${station.control_mode || 'Awaiting command'} · H6 ${fmt(station.forecast, 'raw_turbidity')} NTU · ${Number(station.latency_ms || 0).toFixed(1)} ms`;
   const link = document.querySelector(`#${id}-link`);
   if (station.wokwi_url) {
     link.href = station.wokwi_url;
@@ -119,6 +110,30 @@ function updateStation(id, station) {
     link.removeAttribute('href');
     link.classList.add('pending');
   }
+}
+
+function commitSensor(id, station, key) {
+  setChangingText(document.querySelector(`#${id}-${key}`), fmt(station.sensors?.[key], key));
+}
+
+function updateStationProcess(id, station) {
+  const progress = Math.max(0, Math.min(100, Number(station.local_progress || 0)));
+  document.querySelector(`#${id}-phase`).textContent = station.phase || 'Waiting';
+  document.querySelector(`#${id}-progressText`).textContent = `${Math.round(progress)}%`;
+  document.querySelector(`#${id}-progress`).style.width = `${progress}%`;
+}
+
+function commitPump(id, station, key) {
+  const value = Number(station.pumps?.[key] || 0);
+  const pump = document.querySelector(`#${id}-pump-${key}`);
+  pump.style.setProperty('--power', Math.max(.12, value / 100));
+  pump.classList.toggle('high', value >= 90);
+  pump.classList.add('received');
+  setChangingText(document.querySelector(`#${id}-${key}`), `${value.toFixed(1)}%`);
+}
+
+function commitControlResult(id, station) {
+  document.querySelector(`#${id}-mode`).textContent = `${station.control_mode || 'Awaiting command'} · H6 ${fmt(station.forecast, 'raw_turbidity')} NTU · ${Number(station.latency_ms || 0).toFixed(1)} ms`;
 }
 
 function showSvgMotion(animationId, delay = 0, visibleFor = 1500) {
@@ -150,7 +165,8 @@ function clearStageTimers() {
   stageTimers = [];
 }
 
-function runStage(index = stageIndex) {
+function runStage(index, state, token) {
+  if (!state || motionPaused || token !== cycleToken) return;
   clearTimeout(stageTimer);
   clearStageTimers();
   const stage = stages[index];
@@ -161,9 +177,25 @@ function runStage(index = stageIndex) {
   document.querySelector('#visualStage').textContent = stage.label;
   document.querySelectorAll('.step').forEach(element => element.classList.toggle('active', element.dataset.key === stage.key));
   if (!motionPaused) {
-    if (stage.key === 'sensor') order.forEach(id => { for (let i = 0; i < 6; i += 1) showSvgMotion(`sensorMotion-${id}-${i}`, i * 85, 1050); });
+    if (stage.key === 'sensor') {
+      document.querySelectorAll('.pump.received').forEach(pump => pump.classList.remove('received'));
+      order.forEach(id => {
+        Object.keys(sensorDefs).forEach((key, index) => {
+          showSvgMotion(`sensorMotion-${id}-${index}`, index * 85, 1050);
+          const arrival = setTimeout(() => {
+            if (token === cycleToken && !motionPaused) commitSensor(id, state.stations?.[id] || {}, key);
+          }, 920 + index * 85);
+          stageTimers.push(arrival);
+        });
+      });
+    }
     if (stage.key === 'edge') restartLane('.lane-ball.edge');
+    if (stage.key === 'local') order.forEach(id => updateStationProcess(id, state.stations?.[id] || {}));
     if (stage.key === 'upload') for (let i = 0; i < 3; i += 1) showSvgMotion(`uploadMotion-${i}`, i * 100, 1400);
+    if (stage.key === 'aggregate') {
+      document.querySelector('#cloudStatus').textContent = state.cloud?.status || 'Relation-guided aggregation';
+      document.querySelector('#hash').textContent = state.cloud?.weights_hash || '—';
+    }
     if (stage.key === 'broadcast') {
       for (let i = 0; i < 3; i += 1) showSvgMotion(`broadcastMotion-${i}`, i * 100, 1400);
       restartLane('.lane-ball.return', 720);
@@ -172,8 +204,55 @@ function runStage(index = stageIndex) {
       showSvgMotion(`commandMotion-${id}-0`, 0, 1450);
       showSvgMotion(`commandMotion-${id}-1`, 170, 1550);
     });
+    if (stage.key === 'actuate') {
+      const alumArrival = setTimeout(() => {
+        if (token !== cycleToken || motionPaused) return;
+        order.forEach(id => commitPump(id, state.stations?.[id] || {}, 'alum'));
+      }, 1150);
+      const chlorineArrival = setTimeout(() => {
+        if (token !== cycleToken || motionPaused) return;
+        order.forEach(id => {
+          const station = state.stations?.[id] || {};
+          commitPump(id, station, 'chlorine');
+          commitControlResult(id, station);
+        });
+      }, 1530);
+      stageTimers.push(alumArrival, chlorineArrival);
+    }
   }
-  stageTimer = setTimeout(() => { if (!motionPaused) runStage((index + 1) % stages.length); }, stage.duration);
+  stageTimer = setTimeout(() => {
+    if (motionPaused || token !== cycleToken) return;
+    if (index < stages.length - 1) {
+      runStage(index + 1, state, token);
+      return;
+    }
+    cycleRunning = false;
+    if (queuedState && Number(queuedState.live_cycle || 0) !== activeCycle) {
+      const next = queuedState;
+      queuedState = null;
+      startCycle(next, true);
+    }
+  }, stage.duration);
+}
+
+function startCycle(state, force = false) {
+  if (!state) return;
+  if (motionPaused) {
+    queuedState = state;
+    return;
+  }
+  if (cycleRunning && !force) {
+    queuedState = state;
+    return;
+  }
+  clearTimeout(stageTimer);
+  clearStageTimers();
+  cycleToken += 1;
+  activeCycle = Number(state.live_cycle || 0);
+  currentCycleState = state;
+  cycleRunning = true;
+  document.querySelector('#cycle').textContent = activeCycle;
+  runStage(0, state, cycleToken);
 }
 
 document.querySelector('#motionToggle').addEventListener('click', event => {
@@ -183,14 +262,15 @@ document.querySelector('#motionToggle').addEventListener('click', event => {
   if (motionPaused) {
     clearTimeout(stageTimer);
     clearStageTimers();
-  } else runStage(stageIndex);
+    cycleRunning = false;
+  } else startCycle(queuedState || latestState || currentCycleState, true);
 });
 
 document.querySelector('#replay').addEventListener('click', () => {
   motionPaused = false;
   document.body.classList.remove('motion-paused');
   document.querySelector('#motionToggle').textContent = 'Pause motion';
-  runStage(0);
+  startCycle(latestState || currentCycleState, true);
 });
 
 function renderSummary(summary) {
@@ -214,11 +294,20 @@ async function refresh() {
     document.querySelector('#transportState').textContent = `${transport} · ${transportDetail}`;
     document.querySelector('#round').textContent = state.round;
     document.querySelector('#maxRound').textContent = state.max_rounds;
-    document.querySelector('#cycle').textContent = state.live_cycle || 0;
-    document.querySelector('#cloudStatus').textContent = state.cloud.status;
-    document.querySelector('#hash').textContent = state.cloud.weights_hash || '—';
     ensureStations(state.stations || {});
-    order.forEach(id => updateStation(id, state.stations?.[id] || {}));
+    order.forEach(id => updateStationStatus(id, state.stations?.[id] || {}));
+    latestState = state;
+    const nextCycle = Number(state.live_cycle || 0);
+    if (nextCycle > 0 && nextCycle !== activeCycle) {
+      // A newly published backend cycle is authoritative.  Interrupting an
+      // older visual cycle prevents a page opened mid-cycle from remaining
+      // one sample behind the MQTT/model execution indefinitely.
+      startCycle(state, true);
+    } else if (nextCycle === 0 && !currentCycleState) {
+      document.querySelector('#cloudStatus').textContent = state.cloud?.status || 'Initializing';
+      document.querySelector('#hash').textContent = state.cloud?.weights_hash || '—';
+      order.forEach(id => updateStationProcess(id, state.stations?.[id] || {}));
+    }
     document.querySelector('#events').innerHTML = state.events.length ? state.events.map(event => `<div class="event"><time>${esc(event.time)}</time><span class="badge">${esc(event.kind).toUpperCase()}</span><span>${event.station ? `${esc(event.station)}: ` : ''}${esc(event.text)}</span></div>`).join('') : '<div class="empty">Waiting for events…</div>';
     const sampleDetail = isLive
       ? 'The displayed figures are the exact current MQTT samples transmitted to the three acknowledged Wokwi nodes.'
@@ -230,6 +319,7 @@ async function refresh() {
   }
 }
 
-refresh().then(() => runStage(0));
-setInterval(refresh, 700);
+refresh();
+setInterval(refresh, 450);
+
 
