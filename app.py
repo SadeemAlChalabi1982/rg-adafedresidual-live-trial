@@ -326,13 +326,17 @@ class PublicFederatedEngine:
             time.sleep(min(1.0, CYCLE_SECONDS / 3.0))
             self.drain_live_telemetry()
             now = time.time()
+            last_contact = {
+                station: max(self.last_seen[station], self.last_status_seen[station])
+                for station in fs.STATIONS
+            }
             live_stations = [
                 station
                 for station in fs.STATIONS
                 if (
                     self.reported_online[station]
                     and
-                    now - self.last_seen[station] <= LIVE_TIMEOUT_SECONDS
+                    now - last_contact[station] <= LIVE_TIMEOUT_SECONDS
                     and station in self.latest_live
                 )
             ]
@@ -358,7 +362,7 @@ class PublicFederatedEngine:
                 for station in fs.STATIONS:
                     connected = station in live_stations
                     age_seconds = (
-                        now - self.last_seen[station]
+                        now - last_contact[station]
                         if station in self.latest_live
                         else 0.0
                     )
@@ -441,4 +445,3 @@ def serve():
 
 if __name__ == "__main__":
     serve()
-
