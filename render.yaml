@@ -20,7 +20,7 @@ services:
       - key: LIVE_TIMEOUT_SECONDS
         value: "60"
       - key: STATION_HEARTBEAT_TIMEOUT_SECONDS
-        value: "22"
+        value: "75"
       - key: CYCLE_SECONDS
         value: "12"
       - key: WOKWI_AUSTIN_URL
