@@ -53,6 +53,17 @@ function commandMarkup(id) {
     </svg>`;
 }
 
+function treatmentOutcomeMarkup(id) {
+  return `<section class="treatment-outcome" aria-label="Live treatment outcome">
+    <div class="treatment-title"><span>Live treatment outcome</span><strong id="${id}-quality" class="quality-status">Awaiting cycle</strong></div>
+    <div class="treatment-path">
+      <div class="water-state before"><small>BEFORE TREATMENT</small><b id="${id}-before-ntu">— NTU</b><em>Raw turbidity</em></div>
+      <div class="dose-state"><small>DOSING</small><b><span id="${id}-dose-alum">0.0%</span> Alum</b><b><span id="${id}-dose-chlorine">0.0%</span> Cl₂</b></div>
+      <div class="water-state after"><small>AFTER TREATMENT</small><b id="${id}-after-ntu">— NTU</b><em id="${id}-removal">Removal —</em><span id="${id}-after-chlorine">Residual Cl₂ — mg/L</span></div>
+    </div>
+  </section>`;
+}
+
 function setChangingText(element, text) {
   if (!element || element.textContent === text) return;
   const previous = element.textContent;
@@ -86,6 +97,7 @@ function stationShell(id, station) {
       <div id="${id}-pump-alum" class="pump" style="--power:0"><span class="pump-icon"></span><span><b id="${id}-alum">0.0%</b><small>Alum pump</small></span></div>
       <div id="${id}-pump-chlorine" class="pump" style="--power:0"><span class="pump-icon"></span><span><b id="${id}-chlorine">0.0%</b><small>Cl₂ pump</small></span></div>
     </div>
+    ${treatmentOutcomeMarkup(id)}
     <div class="station-foot"><span id="${id}-mode" class="control-mode">Awaiting control command</span><a id="${id}-link" class="open-node pending" target="_blank" rel="noopener">Inspect circuit ↗</a></div>
   </article>`;
 }
@@ -162,7 +174,9 @@ function enterStrictStandby(state) {
       pump.style.setProperty('--power', 0);
       pump.classList.remove('high', 'received');
       document.querySelector(`#${id}-${key}`).textContent = '0.0%';
+      document.querySelector(`#${id}-dose-${key}`).textContent = '0.0%';
     });
+    resetTreatmentOutcome(id);
     document.querySelector(`#${id}-mode`).textContent = 'Safety interlock · zero output';
   });
 }
@@ -205,7 +219,9 @@ function enterHoldState(state) {
       pump.classList.toggle('high', value >= 90);
       pump.classList.remove('received');
       document.querySelector(`#${id}-${key}`).textContent = `${value.toFixed(1)}%`;
+      document.querySelector(`#${id}-dose-${key}`).textContent = `${value.toFixed(1)}%`;
     });
+    updateTreatmentOutcome(id, station);
     const age = Number(station.stale_seconds || 0);
     document.querySelector(`#${id}-mode`).textContent = station.connection_state === 'HOLDING'
       ? `Holding last validated command · ${Math.round(age)} s`
@@ -215,6 +231,40 @@ function enterHoldState(state) {
 
 function commitSensor(id, station, key) {
   setChangingText(document.querySelector(`#${id}-${key}`), fmt(station.sensors?.[key], key));
+  if (key === 'residual_chlorine') updateTreatmentOutcome(id, station);
+}
+
+function resetTreatmentOutcome(id) {
+  document.querySelector(`#${id}-before-ntu`).textContent = '— NTU';
+  document.querySelector(`#${id}-after-ntu`).textContent = '— NTU';
+  document.querySelector(`#${id}-removal`).textContent = 'Removal —';
+  document.querySelector(`#${id}-after-chlorine`).textContent = 'Residual Cl₂ — mg/L';
+  const quality = document.querySelector(`#${id}-quality`);
+  quality.textContent = 'Awaiting cycle';
+  quality.classList.remove('within', 'outside');
+}
+
+function updateTreatmentOutcome(id, station) {
+  const raw = station.sensors?.raw_turbidity;
+  const filtered = station.sensors?.filtered_turbidity;
+  const chlorine = station.sensors?.residual_chlorine;
+  if (![raw, filtered, chlorine].every(value => value != null && Number.isFinite(Number(value)))) {
+    resetTreatmentOutcome(id);
+    return;
+  }
+  const rawValue = Number(raw);
+  const filteredValue = Number(filtered);
+  const chlorineValue = Number(chlorine);
+  const removal = rawValue > 0 ? 100 * (rawValue - filteredValue) / rawValue : 0;
+  const jointWithin = filteredValue <= 1.0 && chlorineValue >= 0.2 && chlorineValue <= 0.4;
+  setChangingText(document.querySelector(`#${id}-before-ntu`), `${rawValue.toFixed(2)} NTU`);
+  setChangingText(document.querySelector(`#${id}-after-ntu`), `${filteredValue.toFixed(2)} NTU`);
+  setChangingText(document.querySelector(`#${id}-removal`), `Removal ${Math.max(0, removal).toFixed(1)}%`);
+  setChangingText(document.querySelector(`#${id}-after-chlorine`), `Residual Cl₂ ${chlorineValue.toFixed(2)} mg/L`);
+  const quality = document.querySelector(`#${id}-quality`);
+  quality.textContent = jointWithin ? 'WATER WITHIN TARGET' : 'ATTENTION REQUIRED';
+  quality.classList.toggle('within', jointWithin);
+  quality.classList.toggle('outside', !jointWithin);
 }
 
 function updateStationProcess(id, station) {
@@ -231,6 +281,7 @@ function commitPump(id, station, key) {
   pump.classList.toggle('high', value >= 90);
   pump.classList.add('received');
   setChangingText(document.querySelector(`#${id}-${key}`), `${value.toFixed(1)}%`);
+  setChangingText(document.querySelector(`#${id}-dose-${key}`), `${value.toFixed(1)}%`);
 }
 
 function commitControlResult(id, station) {
@@ -380,7 +431,7 @@ document.querySelector('#replay').addEventListener('click', () => {
 function renderSummary(summary) {
   const values = order.map(key => summary[key]).filter(Boolean);
   if (!values.length) return;
-  document.querySelector('#summary').innerHTML = `<table><thead><tr><th>Station</th><th>Origin</th><th>Cycles</th><th>Turbidity compliant</th><th>Chlorine compliant</th><th>Joint compliant</th><th>Mean alum</th><th>Mean chlorine</th></tr></thead><tbody>${values.map(row => `<tr><td><b>${esc(row.station)}</b></td><td>${esc(row.origin)}</td><td>${row.n}</td><td>${Number(row.turbidity_compliance_pct).toFixed(1)}%</td><td>${Number(row.chlorine_compliance_pct).toFixed(1)}%</td><td>${Number(row.joint_compliance_pct).toFixed(1)}%</td><td>${Number(row.mean_alum_pct).toFixed(1)}%</td><td>${Number(row.mean_chlorine_pct).toFixed(1)}%</td></tr>`).join('')}</tbody></table><div class="disclosure">Rolling operational diagnostics are recalculated from the latest stream; fixed paper results remain unchanged.</div>`;
+  document.querySelector('#summary').innerHTML = `<table><thead><tr><th>Station</th><th>Data origin</th><th>Samples</th><th>Turbidity acceptance</th><th>Chlorine acceptance</th><th>Overall water-quality acceptance</th><th>Average alum dose</th><th>Average chlorine dose</th></tr></thead><tbody>${values.map(row => `<tr><td><b>${esc(row.station)}</b></td><td>${esc(row.origin)}</td><td>${row.n}</td><td>${Number(row.turbidity_compliance_pct).toFixed(1)}%</td><td>${Number(row.chlorine_compliance_pct).toFixed(1)}%</td><td><b class="acceptance-value">${Number(row.joint_compliance_pct).toFixed(1)}%</b></td><td>${Number(row.mean_alum_pct).toFixed(1)}%</td><td>${Number(row.mean_chlorine_pct).toFixed(1)}%</td></tr>`).join('')}</tbody></table><div class="disclosure"><b>Acceptance percentage</b> is the share of completed cycles that met the configured treated-water target. These rolling operational statistics update with the live stream; fixed paper results remain unchanged.</div>`;
 }
 
 async function refresh() {
