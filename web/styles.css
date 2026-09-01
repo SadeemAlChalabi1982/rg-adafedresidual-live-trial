@@ -28,3 +28,29 @@ body.motion-paused *{animation-play-state:paused!important}.motion-paused .globa
 @media(max-width:650px){.page{padding:11px}.topbar{align-items:flex-start;flex-direction:column}.run{width:100%;flex-wrap:wrap}.timeline{grid-template-columns:1fr 1fr}.motion-controls .legend{display:none}.architecture{padding:16px 10px}.sensor-grid{grid-template-columns:repeat(2,1fr)}.stack{grid-template-columns:1fr}.arch-label{align-items:flex-start;gap:8px}.phase{text-align:right;font-size:11px}}
 @media(prefers-reduced-motion:reduce){*{animation-duration:.001ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important}}
 
+/* Stage-aware ESP32 ↔ Raspberry Pi direction */
+.data-lane:before{transition:background .25s,box-shadow .25s}
+.data-lane:after{transition:border-color .25s,filter .25s}
+.architecture[data-stage="edge"] .data-lane:before{background:var(--blue);box-shadow:0 0 7px rgba(23,135,255,.28)}
+.architecture[data-stage="edge"] .data-lane:after{border-left-color:var(--blue);filter:drop-shadow(0 0 3px rgba(23,135,255,.42))}
+.architecture[data-stage="broadcast"] .data-lane:before,.architecture[data-stage="actuate"] .data-lane:before{background:var(--green);box-shadow:0 0 7px rgba(16,173,114,.3)}
+.architecture[data-stage="broadcast"] .data-lane:after,.architecture[data-stage="actuate"] .data-lane:after{left:0;right:auto;border-left:0;border-right:6px solid var(--green);filter:drop-shadow(0 0 3px rgba(16,173,114,.45))}
+
+/* Explicit before-treatment → dosing → after-treatment outcome */
+.treatment-outcome{margin-top:8px;padding:8px;border:1px solid #dce8e4;border-radius:14px;background:linear-gradient(135deg,#fbfdff,#f2fbf7);box-shadow:inset 0 1px 0 #fff}
+.treatment-title{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;font-size:8px;font-weight:900;text-transform:uppercase;letter-spacing:.055em;color:#547088}
+.quality-status{padding:3px 6px;border:1px solid #dbe4eb;border-radius:999px;background:#f5f7f9;color:#718197;font-size:7px;white-space:nowrap}
+.quality-status.within{color:#07845a;border-color:#bfe5d6;background:#eaf9f3}
+.quality-status.outside{color:#b46d09;border-color:#efd39b;background:#fff7e7}
+.treatment-path{display:grid;grid-template-columns:1fr 74px 1.15fr;gap:6px;align-items:stretch}
+.water-state,.dose-state{position:relative;border-radius:10px;padding:7px;background:rgba(255,255,255,.84);border:1px solid #dfe9f1;text-align:center;min-width:0}
+.water-state small,.dose-state small{display:block;font-size:6px;font-weight:900;letter-spacing:.07em;color:#698098}
+.water-state b{display:block;font-size:12px;margin:1px 0}.water-state em,.water-state span{display:block;font-style:normal;color:var(--muted);font-size:7px}
+.water-state.before:after,.dose-state:after{content:"";position:absolute;right:-7px;top:50%;width:7px;height:2px;background:#85b8e7}
+.water-state.before:before,.dose-state:before{content:"";position:absolute;right:-7px;top:calc(50% - 3px);border-left:5px solid #68a8e0;border-top:4px solid transparent;border-bottom:4px solid transparent;transform:translateX(5px);z-index:2}
+.dose-state{display:flex;flex-direction:column;justify-content:center;background:#fff8f9;border-color:#f0d4d8}.dose-state b{font-size:7px;color:#b33747;white-space:nowrap}
+.water-state.after{border-color:#cbe6dc;background:#f4fcf8}.water-state.after b{color:#087d5b}.water-state.after span{color:#08745a;font-weight:800}
+[data-stage="actuate"] .dose-state{border-color:#ec919c;box-shadow:0 0 16px rgba(233,75,93,.13)}
+[data-stage="sensor"] .water-state.after{box-shadow:0 0 16px rgba(10,168,115,.11)}
+.summary th{font-size:9px}.summary .acceptance-value{display:inline-block;color:#087a59;background:#eaf9f3;border:1px solid #c7eadc;border-radius:999px;padding:2px 7px}
+@media(max-width:650px){.treatment-path{grid-template-columns:1fr 66px 1.15fr}.water-state b{font-size:11px}}
