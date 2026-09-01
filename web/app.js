@@ -76,9 +76,9 @@ function stationShell(id, station) {
     <div class="sensor-grid">${sensors}</div>
     ${sensorMotionMarkup(id)}
     <div class="hardware">
-      <div id="${id}-esp32" class="device esp32"><span class="device-leds"><i class="red"></i><i class="green"></i></span><b>ESP32</b><small>ADC · MQTT · PWM</small></div>
+      <div id="${id}-esp32" class="device esp32"><span class="device-leds"><i class="red"></i><i class="green"></i></span><b>ESP32 station</b><small>sense · event bus · PWM</small></div>
       <div class="data-lane"><i class="lane-ball edge"></i><i class="lane-ball return"></i></div>
-      <div id="${id}-pi" class="device pi"><span class="device-leds"><i class="red"></i><i class="green"></i></span><b>Raspberry Pi 4B</b><small>RG-AdaFedResidual client</small></div>
+      <div id="${id}-pi" class="device pi"><span class="device-leds"><i class="red"></i><i class="green"></i></span><b>Raspberry Pi 4B</b><small>private RG-AdaFedResidual client</small></div>
     </div>
     <div class="local-box"><div class="local-row"><span id="${id}-phase">Waiting</span><span id="${id}-progressText">0%</span></div><div class="track"><span id="${id}-progress"></span></div></div>
     ${commandMarkup(id)}
@@ -86,7 +86,7 @@ function stationShell(id, station) {
       <div id="${id}-pump-alum" class="pump" style="--power:0"><span class="pump-icon"></span><span><b id="${id}-alum">0.0%</b><small>Alum pump</small></span></div>
       <div id="${id}-pump-chlorine" class="pump" style="--power:0"><span class="pump-icon"></span><span><b id="${id}-chlorine">0.0%</b><small>Cl₂ pump</small></span></div>
     </div>
-    <div class="station-foot"><span id="${id}-mode" class="control-mode">Awaiting control command</span><a id="${id}-link" class="open-node pending" target="_blank" rel="noopener">Open Wokwi ↗</a></div>
+    <div class="station-foot"><span id="${id}-mode" class="control-mode">Awaiting control command</span><a id="${id}-link" class="open-node pending" target="_blank" rel="noopener">Inspect circuit ↗</a></div>
   </article>`;
 }
 
@@ -116,6 +116,7 @@ function updateStationStatus(id, station) {
 }
 
 function enterStrictStandby(state) {
+  const isCloud = String(state.deployment?.transport || '').includes('CLOUD');
   if (!standbyApplied) {
     clearTimeout(stageTimer);
     clearStageTimers();
@@ -134,7 +135,9 @@ function enterStrictStandby(state) {
   const architecture = document.querySelector('#architecture');
   architecture.dataset.stage = 'standby';
   architecture.style.setProperty('--stage-color', '#94a3b8');
-  document.querySelector('#visualStage').textContent = 'Waiting for all three Wokwi stations';
+  document.querySelector('#visualStage').textContent = isCloud
+    ? 'Starting all three cloud station runtimes'
+    : 'Waiting for all three Wokwi stations';
   document.querySelector('#cycle').textContent = '0';
   document.querySelector('#cloudStatus').textContent = state.cloud?.status || 'Safety standby';
   document.querySelector('#hash').textContent = state.cloud?.weights_hash || '—';
@@ -149,9 +152,9 @@ function enterStrictStandby(state) {
       value.textContent = '—';
       value.classList.remove('value-flash');
     });
-    document.querySelector(`#${id}-phase`).textContent = station.online
+    document.querySelector(`#${id}-phase`).textContent = station.phase || (station.online
       ? 'Connected — waiting for all stations'
-      : 'Waiting for Wokwi telemetry';
+      : isCloud ? 'Starting cloud station runtime' : 'Waiting for Wokwi telemetry');
     document.querySelector(`#${id}-progressText`).textContent = '0%';
     document.querySelector(`#${id}-progress`).style.width = '0%';
     ['alum', 'chlorine'].forEach(key => {
@@ -385,14 +388,17 @@ async function refresh() {
     const response = await fetch(`/api/state?${Date.now()}`, { cache: 'no-store' });
     const state = await response.json();
     const mode = state.deployment?.live_mode || 'INITIALIZING';
-    const isLive = mode === 'LIVE MQTT';
+    const isCloud = mode === 'CLOUD FEDERATED LIVE';
+    const isLive = mode === 'LIVE MQTT' || isCloud;
     const isHolding = mode === 'HOLDING LAST STATE';
     const dot = document.querySelector('#liveDot');
     dot.classList.toggle('on', isLive);
     dot.classList.toggle('fallback', !isLive && state.running);
     document.querySelector('#runState').textContent = mode;
     const transport = state.deployment?.transport || 'PUBLIC MQTT';
-    const transportDetail = state.broker?.connected ? 'BROKER CONNECTED' : 'BROKER STANDBY';
+    const transportDetail = state.broker?.connected
+      ? (String(transport).includes('CLOUD') ? 'EVENT BUS ACTIVE' : 'BROKER CONNECTED')
+      : (String(transport).includes('CLOUD') ? 'EVENT BUS STARTING' : 'BROKER STANDBY');
     document.querySelector('#transportState').textContent = `${transport} · ${transportDetail}`;
     document.querySelector('#round').textContent = state.round;
     document.querySelector('#maxRound').textContent = state.max_rounds;
@@ -411,7 +417,9 @@ async function refresh() {
       enterStrictStandby(state);
     }
     document.querySelector('#events').innerHTML = state.events.length ? state.events.map(event => `<div class="event"><time>${esc(event.time)}</time><span class="badge">${esc(event.kind).toUpperCase()}</span><span>${event.station ? `${esc(event.station)}: ` : ''}${esc(event.text)}</span></div>`).join('') : '<div class="empty">Waiting for events…</div>';
-    const sampleDetail = isLive
+    const sampleDetail = isCloud
+      ? `The displayed figures are the current samples emitted by three independent cloud station runtimes. Each cycle performs three private local updates, relation-guided aggregation to global model v${state.federation_version || '—'}, H6 inference and acknowledged actuator commands.`
+      : isLive
       ? 'The displayed figures are the exact current MQTT samples transmitted to the three acknowledged Wokwi nodes.'
       : isHolding
       ? 'The last validated readings and commands are frozen during the temporary interruption; no new command is generated until all three links recover.'
@@ -425,4 +433,3 @@ async function refresh() {
 
 refresh();
 setInterval(refresh, 450);
-
