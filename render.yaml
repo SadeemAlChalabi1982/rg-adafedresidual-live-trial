@@ -19,6 +19,8 @@ services:
         value: rgaf-sadeem-paper3-live-20260831-v1
       - key: LIVE_TIMEOUT_SECONDS
         value: "60"
+      - key: STATION_HEARTBEAT_TIMEOUT_SECONDS
+        value: "22"
       - key: CYCLE_SECONDS
         value: "12"
       - key: WOKWI_AUSTIN_URL
@@ -27,5 +29,4 @@ services:
         value: https://wokwi.com/projects/473855638857098241
       - key: WOKWI_VIRTUAL_URL
         value: https://wokwi.com/projects/473855699260353537
-
 
