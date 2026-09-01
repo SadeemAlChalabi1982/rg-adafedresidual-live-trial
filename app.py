@@ -20,7 +20,7 @@ TOPIC_ROOT = os.getenv("MQTT_TOPIC_ROOT", "rgaf-sadeem-paper3-live-20260831-v1")
 MQTT_HOST = os.getenv("MQTT_HOST", "broker.hivemq.com")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 FEDERATED_ROUNDS = int(os.getenv("FEDERATED_ROUNDS", "6"))
-LIVE_TIMEOUT_SECONDS = float(os.getenv("STATION_HEARTBEAT_TIMEOUT_SECONDS", "22"))
+LIVE_TIMEOUT_SECONDS = float(os.getenv("STATION_HEARTBEAT_TIMEOUT_SECONDS", "75"))
 CYCLE_SECONDS = float(os.getenv("CYCLE_SECONDS", "12"))
 DEMO_ONLY = os.getenv("DEMO_ONLY", "false").lower() in {"1", "true", "yes"}
 
@@ -59,6 +59,8 @@ class PublicFederatedEngine:
         }
         self.inbox: queue.Queue[dict] = queue.Queue()
         self.last_seen = {station: 0.0 for station in fs.STATIONS}
+        self.last_status_seen = {station: 0.0 for station in fs.STATIONS}
+        self.reported_online = {station: False for station in fs.STATIONS}
         self.latest_live: dict[str, dict] = {}
         self.requested_rows: dict[str, dict] = {}
         self.histories = {station: [] for station in fs.STATIONS}
@@ -92,10 +94,10 @@ class PublicFederatedEngine:
             if station in fs.STATIONS:
                 status = message.payload.decode("utf-8", errors="ignore").strip().lower()
                 if status == "online":
-                    self.last_seen[station] = time.time()
+                    self.reported_online[station] = True
+                    self.last_status_seen[station] = time.time()
                 else:
-                    self.last_seen[station] = 0.0
-                    self.latest_live.pop(station, None)
+                    self.reported_online[station] = False
             return
         if "/telemetry/" not in message.topic:
             return
@@ -104,6 +106,7 @@ class PublicFederatedEngine:
             station = payload.get("station")
             if station in fs.STATIONS:
                 self.last_seen[station] = time.time()
+                self.reported_online[station] = True
                 self.inbox.put(payload)
         except Exception as error:
             fs.STATE.event("mqtt", f"Malformed station telemetry: {error}")
@@ -145,6 +148,8 @@ class PublicFederatedEngine:
                 pumps={"alum": 0.0, "chlorine": 0.0},
                 forecast=0.0,
                 online=False,
+                connection_state="OFFLINE",
+                stale_seconds=0.0,
                 source="initializing",
                 wokwi_url=WOKWI_URLS[station],
             )
@@ -233,6 +238,8 @@ class PublicFederatedEngine:
             control_mode=mode,
             latency_ms=latency_ms,
             online=live,
+            connection_state="LIVE" if live else "OFFLINE",
+            stale_seconds=0.0,
             source=source,
             local_progress=100,
             global_round=self.cloud.round,
@@ -253,9 +260,27 @@ class PublicFederatedEngine:
             control_mode="SAFETY INTERLOCK — ZERO OUTPUT",
             latency_ms=0.0,
             online=connected,
+            connection_state="READY" if connected else "OFFLINE",
+            stale_seconds=0.0,
             source="strict_live_standby",
             local_progress=0,
             global_round=self.cloud.round,
+        )
+
+    def hold_last_validated_state(self, station: str, connected: bool, age_seconds: float):
+        """Freeze the last validated values during a temporary link interruption."""
+        fs.STATE.station(
+            station,
+            phase=(
+                "Link ready — waiting for full station quorum"
+                if connected
+                else "Connection interrupted — holding last validated state"
+            ),
+            online=connected,
+            connection_state="READY" if connected else "HOLDING",
+            stale_seconds=max(0.0, age_seconds),
+            control_mode="HOLDING LAST VALIDATED COMMAND",
+            source="last_validated_live_state",
         )
 
     def request_station_rows(self, cycle: int):
@@ -305,6 +330,8 @@ class PublicFederatedEngine:
                 station
                 for station in fs.STATIONS
                 if (
+                    self.reported_online[station]
+                    and
                     now - self.last_seen[station] <= LIVE_TIMEOUT_SECONDS
                     and station in self.latest_live
                 )
@@ -327,6 +354,15 @@ class PublicFederatedEngine:
                         live=True,
                         source="mqtt_transmitted_station_stream",
                     )
+            elif control_cycle > 0:
+                for station in fs.STATIONS:
+                    connected = station in live_stations
+                    age_seconds = (
+                        now - self.last_seen[station]
+                        if station in self.latest_live
+                        else 0.0
+                    )
+                    self.hold_last_validated_state(station, connected, age_seconds)
             else:
                 for station in fs.STATIONS:
                     connected = station in live_stations
@@ -343,20 +379,28 @@ class PublicFederatedEngine:
                             },
                         )
 
-            live_mode = "LIVE MQTT" if all_live else "WAITING FOR STATIONS"
+            live_mode = (
+                "LIVE MQTT"
+                if all_live
+                else "HOLDING LAST STATE"
+                if control_cycle > 0
+                else "WAITING FOR STATIONS"
+            )
             fs.STATE.update(
                 running=True,
                 phase=(
                     "Closed-loop MQTT regulation"
                     if all_live
+                    else "Connection interrupted — holding last validated state"
+                    if control_cycle > 0
                     else f"Safety standby — {len(live_stations)}/3 stations connected"
                 ),
-                live_cycle=control_cycle if all_live else 0,
+                live_cycle=control_cycle,
                 broker={"connected": self.mqtt_connected, "host": MQTT_HOST, "port": MQTT_PORT},
                 deployment={
                     "transport": "PUBLIC MQTT",
                     "live_mode": live_mode,
-                    "accuracy_scope": "strict live gate: zero output until all three Wokwi stations acknowledge current telemetry",
+                    "accuracy_scope": "strict live gate with last-validated-state hold during temporary MQTT interruptions",
                     "hardware": "Wokwi ESP32 sensor/actuator node + Python Raspberry Pi 4B logical client",
                 },
             )
@@ -364,16 +408,20 @@ class PublicFederatedEngine:
                 status=(
                     "Live commands returned to all Wokwi pumps"
                     if all_live
+                    else f"Holding last validated state — {len(live_stations)}/3 links fresh"
+                    if control_cycle > 0
                     else f"Safety standby — waiting for {3 - len(live_stations)} station(s)"
                 ),
                 contributors=3 if all_live else len(live_stations),
                 weights_hash=self.cloud.parameters.digest(),
             )
             fs.STATE.event(
-                "live" if all_live else "standby",
+                "live" if all_live else "hold" if control_cycle > 0 else "standby",
                 (
                     f"Control cycle {control_cycle}: all three Wokwi stations acknowledged"
                     if all_live
+                    else f"Holding cycle {control_cycle}: {len(live_stations)}/3 links fresh"
+                    if control_cycle > 0
                     else f"Zero-output interlock: {len(live_stations)}/3 stations connected"
                 ),
             )
