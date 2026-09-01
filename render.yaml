@@ -1,32 +1,23 @@
 services:
   - type: web
-    name: rg-adafedresidual-live-trial
+    name: rg-adafedresidual-cloud-laboratory
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python app.py
+    startCommand: python cloud_app.py
     healthCheckPath: /api/state
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.10
       - key: FEDERATED_ROUNDS
         value: "6"
-      - key: MQTT_HOST
-        value: broker.hivemq.com
-      - key: MQTT_PORT
-        value: "1883"
-      - key: MQTT_TOPIC_ROOT
-        value: rgaf-sadeem-paper3-live-20260831-v1
-      - key: LIVE_TIMEOUT_SECONDS
-        value: "60"
-      - key: STATION_HEARTBEAT_TIMEOUT_SECONDS
-        value: "75"
       - key: CYCLE_SECONDS
         value: "12"
+      - key: ONLINE_LOCAL_EPOCHS
+        value: "2"
       - key: WOKWI_AUSTIN_URL
         value: https://wokwi.com/projects/473854149978000385
       - key: WOKWI_TONGJI_URL
         value: https://wokwi.com/projects/473855638857098241
       - key: WOKWI_VIRTUAL_URL
         value: https://wokwi.com/projects/473855699260353537
-
