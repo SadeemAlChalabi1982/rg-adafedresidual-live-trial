@@ -99,8 +99,10 @@ function ensureStations(stations) {
 function updateStationStatus(id, station) {
   const card = document.querySelector(`#station-${id}`);
   if (!card) return;
-  card.classList.toggle('active', Boolean(station.online));
-  document.querySelector(`#${id}-online`).textContent = station.online ? 'ONLINE' : 'OFFLINE';
+  const connectionState = station.connection_state || (station.online ? 'LIVE' : 'OFFLINE');
+  card.classList.toggle('active', connectionState === 'LIVE');
+  card.classList.toggle('holding', connectionState === 'HOLDING' || connectionState === 'READY');
+  document.querySelector(`#${id}-online`).textContent = connectionState;
   document.querySelector(`#${id}-name`).textContent = station.name || id;
   document.querySelector(`#${id}-origin`).textContent = station.origin || '—';
   const link = document.querySelector(`#${id}-link`);
@@ -159,6 +161,52 @@ function enterStrictStandby(state) {
       document.querySelector(`#${id}-${key}`).textContent = '0.0%';
     });
     document.querySelector(`#${id}-mode`).textContent = 'Safety interlock · zero output';
+  });
+}
+
+function enterHoldState(state) {
+  clearTimeout(stageTimer);
+  clearStageTimers();
+  cycleToken += 1;
+  cycleRunning = false;
+  queuedState = null;
+  currentCycleState = state;
+  activeCycle = Number(state.live_cycle || activeCycle || 0);
+  standbyApplied = false;
+  motionPaused = false;
+  document.body.classList.remove('motion-paused');
+  document.querySelectorAll('.global-ball,.sensor-ball,.command-ball').forEach(ball => ball.classList.remove('visible'));
+  document.querySelectorAll('.lane-ball').forEach(ball => ball.classList.remove('go'));
+  const architecture = document.querySelector('#architecture');
+  architecture.dataset.stage = 'hold';
+  architecture.style.setProperty('--stage-color', '#f3a21c');
+  document.querySelector('#visualStage').textContent = 'Holding last validated state';
+  document.querySelector('#cycle').textContent = activeCycle;
+  document.querySelector('#cloudStatus').textContent = state.cloud?.status || 'Holding last validated state';
+  document.querySelector('#hash').textContent = state.cloud?.weights_hash || '—';
+  document.querySelectorAll('.step').forEach(element => element.classList.remove('active'));
+  document.querySelector('#motionToggle').disabled = true;
+  document.querySelector('#replay').disabled = true;
+
+  order.forEach(id => {
+    const station = state.stations?.[id] || {};
+    Object.keys(sensorDefs).forEach(key => {
+      const value = station.sensors?.[key];
+      document.querySelector(`#${id}-${key}`).textContent = value == null ? '—' : fmt(value, key);
+    });
+    updateStationProcess(id, station);
+    ['alum', 'chlorine'].forEach(key => {
+      const value = Number(station.pumps?.[key] || 0);
+      const pump = document.querySelector(`#${id}-pump-${key}`);
+      pump.style.setProperty('--power', Math.max(0, value / 100));
+      pump.classList.toggle('high', value >= 90);
+      pump.classList.remove('received');
+      document.querySelector(`#${id}-${key}`).textContent = `${value.toFixed(1)}%`;
+    });
+    const age = Number(station.stale_seconds || 0);
+    document.querySelector(`#${id}-mode`).textContent = station.connection_state === 'HOLDING'
+      ? `Holding last validated command · ${Math.round(age)} s`
+      : 'Link ready · waiting for full station quorum';
   });
 }
 
@@ -338,6 +386,7 @@ async function refresh() {
     const state = await response.json();
     const mode = state.deployment?.live_mode || 'INITIALIZING';
     const isLive = mode === 'LIVE MQTT';
+    const isHolding = mode === 'HOLDING LAST STATE';
     const dot = document.querySelector('#liveDot');
     dot.classList.toggle('on', isLive);
     dot.classList.toggle('fallback', !isLive && state.running);
@@ -356,12 +405,16 @@ async function refresh() {
       // older visual cycle prevents a page opened mid-cycle from remaining
       // one sample behind the MQTT/model execution indefinitely.
       startCycle(state, true);
+    } else if (isHolding && nextCycle > 0) {
+      enterHoldState(state);
     } else if (!isLive || nextCycle === 0) {
       enterStrictStandby(state);
     }
     document.querySelector('#events').innerHTML = state.events.length ? state.events.map(event => `<div class="event"><time>${esc(event.time)}</time><span class="badge">${esc(event.kind).toUpperCase()}</span><span>${event.station ? `${esc(event.station)}: ` : ''}${esc(event.text)}</span></div>`).join('') : '<div class="empty">Waiting for events…</div>';
     const sampleDetail = isLive
       ? 'The displayed figures are the exact current MQTT samples transmitted to the three acknowledged Wokwi nodes.'
+      : isHolding
+      ? 'The last validated readings and commands are frozen during the temporary interruption; no new command is generated until all three links recover.'
       : 'No operational readings or pump commands are issued until all three Wokwi stations acknowledge current telemetry.';
     document.querySelector('#deploymentDisclosure').textContent = `Execution mode: ${mode}. ${state.deployment?.accuracy_scope || '—'}. Transport: ${transport}. ${sampleDetail} Austin and Tongji use published-field streams; Virtual is explicitly disclosed as a digital twin.`;
     renderSummary(state.summary || {});
