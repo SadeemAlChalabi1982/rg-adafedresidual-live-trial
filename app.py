@@ -21,7 +21,7 @@ MQTT_HOST = os.getenv("MQTT_HOST", "broker.hivemq.com")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 FEDERATED_ROUNDS = int(os.getenv("FEDERATED_ROUNDS", "6"))
 LIVE_TIMEOUT_SECONDS = float(os.getenv("LIVE_TIMEOUT_SECONDS", "60"))
-CYCLE_SECONDS = float(os.getenv("CYCLE_SECONDS", "3"))
+CYCLE_SECONDS = float(os.getenv("CYCLE_SECONDS", "12"))
 DEMO_ONLY = os.getenv("DEMO_ONLY", "false").lower() in {"1", "true", "yes"}
 
 WOKWI_URLS = {
@@ -343,4 +343,5 @@ def serve():
 
 if __name__ == "__main__":
     serve()
+
 
