@@ -27,6 +27,7 @@ let currentCycleState = null;
 let activeCycle = null;
 let cycleRunning = false;
 let cycleToken = 0;
+let standbyApplied = false;
 
 const fmt = (value, key) => value == null ? '—' : (key === 'flow' ? Number(value).toFixed(0) : Number(value).toFixed(2));
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({
@@ -82,8 +83,8 @@ function stationShell(id, station) {
     <div class="local-box"><div class="local-row"><span id="${id}-phase">Waiting</span><span id="${id}-progressText">0%</span></div><div class="track"><span id="${id}-progress"></span></div></div>
     ${commandMarkup(id)}
     <div class="pumps">
-      <div id="${id}-pump-alum" class="pump"><span class="pump-icon"></span><span><b id="${id}-alum">0.0%</b><small>Alum pump</small></span></div>
-      <div id="${id}-pump-chlorine" class="pump"><span class="pump-icon"></span><span><b id="${id}-chlorine">0.0%</b><small>Cl₂ pump</small></span></div>
+      <div id="${id}-pump-alum" class="pump" style="--power:0"><span class="pump-icon"></span><span><b id="${id}-alum">0.0%</b><small>Alum pump</small></span></div>
+      <div id="${id}-pump-chlorine" class="pump" style="--power:0"><span class="pump-icon"></span><span><b id="${id}-chlorine">0.0%</b><small>Cl₂ pump</small></span></div>
     </div>
     <div class="station-foot"><span id="${id}-mode" class="control-mode">Awaiting control command</span><a id="${id}-link" class="open-node pending" target="_blank" rel="noopener">Open Wokwi ↗</a></div>
   </article>`;
@@ -112,6 +113,55 @@ function updateStationStatus(id, station) {
   }
 }
 
+function enterStrictStandby(state) {
+  if (!standbyApplied) {
+    clearTimeout(stageTimer);
+    clearStageTimers();
+    cycleToken += 1;
+    cycleRunning = false;
+    activeCycle = 0;
+    currentCycleState = null;
+    queuedState = null;
+    motionPaused = false;
+    document.body.classList.remove('motion-paused');
+    document.querySelector('#motionToggle').textContent = 'Pause motion';
+    document.querySelectorAll('.global-ball,.sensor-ball,.command-ball').forEach(ball => ball.classList.remove('visible'));
+    document.querySelectorAll('.lane-ball').forEach(ball => ball.classList.remove('go'));
+  }
+  standbyApplied = true;
+  const architecture = document.querySelector('#architecture');
+  architecture.dataset.stage = 'standby';
+  architecture.style.setProperty('--stage-color', '#94a3b8');
+  document.querySelector('#visualStage').textContent = 'Waiting for all three Wokwi stations';
+  document.querySelector('#cycle').textContent = '0';
+  document.querySelector('#cloudStatus').textContent = state.cloud?.status || 'Safety standby';
+  document.querySelector('#hash').textContent = state.cloud?.weights_hash || '—';
+  document.querySelectorAll('.step').forEach(element => element.classList.remove('active'));
+  document.querySelector('#motionToggle').disabled = true;
+  document.querySelector('#replay').disabled = true;
+
+  order.forEach(id => {
+    const station = state.stations?.[id] || {};
+    Object.keys(sensorDefs).forEach(key => {
+      const value = document.querySelector(`#${id}-${key}`);
+      value.textContent = '—';
+      value.classList.remove('value-flash');
+    });
+    document.querySelector(`#${id}-phase`).textContent = station.online
+      ? 'Connected — waiting for all stations'
+      : 'Waiting for Wokwi telemetry';
+    document.querySelector(`#${id}-progressText`).textContent = '0%';
+    document.querySelector(`#${id}-progress`).style.width = '0%';
+    ['alum', 'chlorine'].forEach(key => {
+      const pump = document.querySelector(`#${id}-pump-${key}`);
+      pump.style.setProperty('--power', 0);
+      pump.classList.remove('high', 'received');
+      document.querySelector(`#${id}-${key}`).textContent = '0.0%';
+    });
+    document.querySelector(`#${id}-mode`).textContent = 'Safety interlock · zero output';
+  });
+}
+
 function commitSensor(id, station, key) {
   setChangingText(document.querySelector(`#${id}-${key}`), fmt(station.sensors?.[key], key));
 }
@@ -126,7 +176,7 @@ function updateStationProcess(id, station) {
 function commitPump(id, station, key) {
   const value = Number(station.pumps?.[key] || 0);
   const pump = document.querySelector(`#${id}-pump-${key}`);
-  pump.style.setProperty('--power', Math.max(.12, value / 100));
+  pump.style.setProperty('--power', Math.max(0, value / 100));
   pump.classList.toggle('high', value >= 90);
   pump.classList.add('received');
   setChangingText(document.querySelector(`#${id}-${key}`), `${value.toFixed(1)}%`);
@@ -247,6 +297,9 @@ function startCycle(state, force = false) {
   }
   clearTimeout(stageTimer);
   clearStageTimers();
+  standbyApplied = false;
+  document.querySelector('#motionToggle').disabled = false;
+  document.querySelector('#replay').disabled = false;
   cycleToken += 1;
   activeCycle = Number(state.live_cycle || 0);
   currentCycleState = state;
@@ -298,20 +351,18 @@ async function refresh() {
     order.forEach(id => updateStationStatus(id, state.stations?.[id] || {}));
     latestState = state;
     const nextCycle = Number(state.live_cycle || 0);
-    if (nextCycle > 0 && nextCycle !== activeCycle) {
+    if (isLive && nextCycle > 0 && nextCycle !== activeCycle) {
       // A newly published backend cycle is authoritative.  Interrupting an
       // older visual cycle prevents a page opened mid-cycle from remaining
       // one sample behind the MQTT/model execution indefinitely.
       startCycle(state, true);
-    } else if (nextCycle === 0 && !currentCycleState) {
-      document.querySelector('#cloudStatus').textContent = state.cloud?.status || 'Initializing';
-      document.querySelector('#hash').textContent = state.cloud?.weights_hash || '—';
-      order.forEach(id => updateStationProcess(id, state.stations?.[id] || {}));
+    } else if (!isLive || nextCycle === 0) {
+      enterStrictStandby(state);
     }
     document.querySelector('#events').innerHTML = state.events.length ? state.events.map(event => `<div class="event"><time>${esc(event.time)}</time><span class="badge">${esc(event.kind).toUpperCase()}</span><span>${event.station ? `${esc(event.station)}: ` : ''}${esc(event.text)}</span></div>`).join('') : '<div class="empty">Waiting for events…</div>';
     const sampleDetail = isLive
       ? 'The displayed figures are the exact current MQTT samples transmitted to the three acknowledged Wokwi nodes.'
-      : 'The displayed figures advance through the explicitly disclosed verified external-validation trace while Wokwi is unavailable.';
+      : 'No operational readings or pump commands are issued until all three Wokwi stations acknowledge current telemetry.';
     document.querySelector('#deploymentDisclosure').textContent = `Execution mode: ${mode}. ${state.deployment?.accuracy_scope || '—'}. Transport: ${transport}. ${sampleDetail} Austin and Tongji use published-field streams; Virtual is explicitly disclosed as a digital twin.`;
     renderSummary(state.summary || {});
   } catch (error) {
@@ -321,5 +372,4 @@ async function refresh() {
 
 refresh();
 setInterval(refresh, 450);
-
 
