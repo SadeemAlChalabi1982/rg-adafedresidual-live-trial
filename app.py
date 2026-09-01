@@ -20,7 +20,7 @@ TOPIC_ROOT = os.getenv("MQTT_TOPIC_ROOT", "rgaf-sadeem-paper3-live-20260831-v1")
 MQTT_HOST = os.getenv("MQTT_HOST", "broker.hivemq.com")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 FEDERATED_ROUNDS = int(os.getenv("FEDERATED_ROUNDS", "6"))
-LIVE_TIMEOUT_SECONDS = float(os.getenv("LIVE_TIMEOUT_SECONDS", "60"))
+LIVE_TIMEOUT_SECONDS = float(os.getenv("STATION_HEARTBEAT_TIMEOUT_SECONDS", "22"))
 CYCLE_SECONDS = float(os.getenv("CYCLE_SECONDS", "12"))
 DEMO_ONLY = os.getenv("DEMO_ONLY", "false").lower() in {"1", "true", "yes"}
 
@@ -87,6 +87,16 @@ class PublicFederatedEngine:
         fs.STATE.event("mqtt", f"MQTT disconnected: {reason_code}")
 
     def _on_message(self, client, userdata, message):
+        if "/status/" in message.topic:
+            station = message.topic.rsplit("/", 1)[-1]
+            if station in fs.STATIONS:
+                status = message.payload.decode("utf-8", errors="ignore").strip().lower()
+                if status == "online":
+                    self.last_seen[station] = time.time()
+                else:
+                    self.last_seen[station] = 0.0
+                    self.latest_live.pop(station, None)
+            return
         if "/telemetry/" not in message.topic:
             return
         try:
@@ -117,8 +127,8 @@ class PublicFederatedEngine:
             live_cycle=0,
             deployment={
                 "transport": "PUBLIC MQTT",
-                "live_mode": "INITIALIZING",
-                "accuracy_scope": "actual RG-AdaFedResidual model; verified-trace fallback is explicitly disclosed",
+                "live_mode": "WAITING FOR STATIONS",
+                "accuracy_scope": "strict live gate: no readings or pump commands before all three Wokwi stations are online",
                 "hardware": "Wokwi ESP32 sensor/actuator node + Python Raspberry Pi 4B logical client",
             },
             broker={"connected": False, "host": MQTT_HOST, "port": MQTT_PORT},
@@ -141,7 +151,7 @@ class PublicFederatedEngine:
 
     def connect_mqtt(self):
         if DEMO_ONLY:
-            fs.STATE.event("mqtt", "DEMO_ONLY enabled; using verified-trace fallback")
+            fs.STATE.event("mqtt", "MQTT disabled; strict zero-output standby remains active")
             return
         try:
             self.mqtt_client.connect_async(MQTT_HOST, MQTT_PORT, keepalive=45)
@@ -214,7 +224,7 @@ class PublicFederatedEngine:
             )
         fs.STATE.station(
             station,
-            phase="Live MQTT regulation" if live else "Verified trace fallback — Wokwi offline",
+            phase="Live MQTT regulation" if live else "Safety standby — zero output",
             sensors={key: features[key] for key in (
                 "raw_turbidity", "filtered_turbidity", "ph", "temperature", "flow", "residual_chlorine"
             )},
@@ -225,6 +235,26 @@ class PublicFederatedEngine:
             online=live,
             source=source,
             local_progress=100,
+            global_round=self.cloud.round,
+        )
+
+    def hold_station_at_zero(self, station: str, connected: bool):
+        """Expose a safe, truthful standby state until the live quorum exists."""
+        fs.STATE.station(
+            station,
+            phase=(
+                "Connected — waiting for all three stations"
+                if connected
+                else "Waiting for Wokwi telemetry"
+            ),
+            sensors={},
+            pumps={"alum": 0.0, "chlorine": 0.0},
+            forecast=None,
+            control_mode="SAFETY INTERLOCK — ZERO OUTPUT",
+            latency_ms=0.0,
+            online=connected,
+            source="strict_live_standby",
+            local_progress=0,
             global_round=self.cloud.round,
         )
 
@@ -264,16 +294,26 @@ class PublicFederatedEngine:
         self.connect_mqtt()
         self.train_federated_model()
         cycle = 0
+        control_cycle = 0
         while True:
             cycle += 1
             self.request_station_rows(cycle)
             time.sleep(min(1.0, CYCLE_SECONDS / 3.0))
             self.drain_live_telemetry()
             now = time.time()
-            live_stations = []
-            for station in fs.STATIONS:
-                is_live = now - self.last_seen[station] <= LIVE_TIMEOUT_SECONDS
-                if is_live and station in self.latest_live:
+            live_stations = [
+                station
+                for station in fs.STATIONS
+                if (
+                    now - self.last_seen[station] <= LIVE_TIMEOUT_SECONDS
+                    and station in self.latest_live
+                )
+            ]
+            all_live = len(live_stations) == len(fs.STATIONS)
+
+            if all_live:
+                control_cycle += 1
+                for station in fs.STATIONS:
                     # Display and regulate the exact current row transmitted to
                     # the Wokwi node.  The returned telemetry is used as the
                     # online/freshness acknowledgement, not as a frozen cache.
@@ -287,30 +327,36 @@ class PublicFederatedEngine:
                         live=True,
                         source="mqtt_transmitted_station_stream",
                     )
-                    live_stations.append(station)
-                else:
-                    row = self.tests[station].iloc[(cycle - 1) % len(self.tests[station])]
-                    fallback = {key: float(row[key]) for key in (
-                        "raw_turbidity", "filtered_turbidity", "ph", "temperature", "flow", "residual_chlorine"
-                    )}
-                    self.infer_and_update(
-                        station,
-                        fallback,
-                        live=False,
-                        source="verified_external_validation_trace",
-                    )
+            else:
+                for station in fs.STATIONS:
+                    connected = station in live_stations
+                    self.hold_station_at_zero(station, connected)
+                    if connected:
+                        self.publish(
+                            "command",
+                            station,
+                            {
+                                "global_round": self.cloud.round,
+                                "alum_percent": 0.0,
+                                "chlorine_percent": 0.0,
+                                "mode": "SAFETY_INTERLOCK_WAITING_ALL_STATIONS",
+                            },
+                        )
 
-            all_live = len(live_stations) == len(fs.STATIONS)
-            live_mode = "LIVE MQTT" if all_live else "VERIFIED TRACE FALLBACK"
+            live_mode = "LIVE MQTT" if all_live else "WAITING FOR STATIONS"
             fs.STATE.update(
                 running=True,
-                phase="Closed-loop MQTT regulation" if all_live else "Awaiting all three Wokwi stations",
-                live_cycle=cycle,
+                phase=(
+                    "Closed-loop MQTT regulation"
+                    if all_live
+                    else f"Safety standby — {len(live_stations)}/3 stations connected"
+                ),
+                live_cycle=control_cycle if all_live else 0,
                 broker={"connected": self.mqtt_connected, "host": MQTT_HOST, "port": MQTT_PORT},
                 deployment={
                     "transport": "PUBLIC MQTT",
                     "live_mode": live_mode,
-                    "accuracy_scope": "actual RG-AdaFedResidual model; verified-trace fallback is explicitly disclosed",
+                    "accuracy_scope": "strict live gate: zero output until all three Wokwi stations acknowledge current telemetry",
                     "hardware": "Wokwi ESP32 sensor/actuator node + Python Raspberry Pi 4B logical client",
                 },
             )
@@ -318,14 +364,18 @@ class PublicFederatedEngine:
                 status=(
                     "Live commands returned to all Wokwi pumps"
                     if all_live
-                    else f"MQTT ready; {len(live_stations)}/3 Wokwi stations online"
+                    else f"Safety standby — waiting for {3 - len(live_stations)} station(s)"
                 ),
-                contributors=3,
+                contributors=3 if all_live else len(live_stations),
                 weights_hash=self.cloud.parameters.digest(),
             )
             fs.STATE.event(
-                "live" if all_live else "fallback",
-                f"Cycle {cycle}: {len(live_stations)}/3 live Wokwi stations",
+                "live" if all_live else "standby",
+                (
+                    f"Control cycle {control_cycle}: all three Wokwi stations acknowledged"
+                    if all_live
+                    else f"Zero-output interlock: {len(live_stations)}/3 stations connected"
+                ),
             )
             time.sleep(max(0.2, CYCLE_SECONDS - min(1.0, CYCLE_SECONDS / 3.0)))
 
@@ -343,5 +393,4 @@ def serve():
 
 if __name__ == "__main__":
     serve()
-
 
