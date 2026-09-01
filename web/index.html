@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="Interactive three-station RG-AdaFedResidual federated water-treatment laboratory.">
   <title>RG-AdaFedResidual Interactive Federated Laboratory</title>
-  <link rel="stylesheet" href="styles.css?v=7">
+  <link rel="stylesheet" href="styles.css?v=8">
 </head>
 <body>
 <main class="page">
@@ -37,10 +37,10 @@
     <span class="step" data-key="actuate" data-n="7" style="--stage:#ed4658">Pump actuation</span>
   </nav>
 
-  <section id="architecture" class="architecture" data-stage="sensor">
+  <section id="architecture" class="architecture" data-stage="standby">
     <div class="arch-label">
       <span class="eyebrow">Live visual data path</span>
-      <span class="phase">Visual stage: <strong id="visualStage">Sensor sampling</strong></span>
+      <span class="phase">Visual stage: <strong id="visualStage">Waiting for all three Wokwi stations</strong></span>
     </div>
     <div class="cloud-wrap">
       <div id="cloud" class="cloud">
@@ -85,8 +85,7 @@
   </section>
   <section class="panel summary"><h3>Measured run summary</h3><div id="summary" class="empty">Results will appear after regulation cycles finish.</div></section>
 </main>
-<script src="app.js?v=7"></script>
+<script src="app.js?v=8"></script>
 </body>
 </html>
-
 
