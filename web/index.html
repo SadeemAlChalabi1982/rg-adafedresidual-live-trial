@@ -3,21 +3,21 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="description" content="Interactive three-station RG-AdaFedResidual federated water-treatment laboratory.">
-  <title>RG-AdaFedResidual Interactive Federated Laboratory</title>
-  <link rel="stylesheet" href="styles.css?v=9">
+  <meta name="description" content="Executable three-station RG-AdaFedResidual cloud federated water-treatment laboratory.">
+  <title>RG-AdaFedResidual Cloud Federated Laboratory</title>
+  <link rel="stylesheet" href="styles.css?v=10">
 </head>
 <body>
 <main class="page">
   <header class="topbar">
     <div class="title">
-      <h1>RG-AdaFedResidual Interactive Federated Laboratory</h1>
-      <p>Live three-station water-quality sensing, local learning, federated aggregation and closed-loop dosing</p>
+      <h1>RG-AdaFedResidual Cloud Federated Laboratory</h1>
+      <p>Executable three-station sensing, private local learning, relation-guided aggregation, H6 forecasting and closed-loop dosing</p>
     </div>
     <div class="run">
       <span id="liveDot" class="live-dot"></span><strong id="runState">Connecting</strong>
       <span id="transportState">MQTT</span>
-      <span class="round">Round <span id="round">0</span>/<span id="maxRound">0</span> · Cycle <span id="cycle">0</span></span>
+      <span class="round">Bootstrap <span id="round">0</span>/<span id="maxRound">0</span> · Cycle <span id="cycle">0</span></span>
     </div>
   </header>
 
@@ -40,7 +40,7 @@
   <section id="architecture" class="architecture" data-stage="standby">
     <div class="arch-label">
       <span class="eyebrow">Live visual data path</span>
-      <span class="phase">Visual stage: <strong id="visualStage">Waiting for all three Wokwi stations</strong></span>
+      <span class="phase">Visual stage: <strong id="visualStage">Starting cloud station runtimes</strong></span>
     </div>
     <div class="cloud-wrap">
       <div id="cloud" class="cloud">
@@ -72,11 +72,11 @@
 
   <section class="below">
     <div class="panel">
-      <h3>Physical and computing stack</h3>
+      <h3>Station and computing stack</h3>
       <div class="stack">
         <div><b>Six sensing channels</b><small>Turbidity, pH, DS18B20, flow and residual chlorine</small></div>
-        <div><b>ESP32-WROOM-32E</b><small>ADC acquisition, MQTT telemetry and PWM commands</small></div>
-        <div><b>Raspberry Pi 4B client</b><small>Preprocessing, local learning, inference and safety gate</small></div>
+        <div><b>ESP32 station runtime</b><small>Sensor acquisition, event transport and PWM command handling</small></div>
+        <div><b>Raspberry Pi 4B client process</b><small>Preprocessing, private local learning, inference and safety gate</small></div>
         <div><b>Two metering pumps</b><small>Alum and chlorine dosing with animated response</small></div>
       </div>
       <div id="deploymentDisclosure" class="disclosure">Loading execution provenance…</div>
@@ -85,7 +85,6 @@
   </section>
   <section class="panel summary"><h3>Measured run summary</h3><div id="summary" class="empty">Results will appear after regulation cycles finish.</div></section>
 </main>
-<script src="app.js?v=9"></script>
+<script src="app.js?v=10"></script>
 </body>
 </html>
-
