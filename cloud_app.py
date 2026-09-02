@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import hmac
 import json
 import queue
+import secrets
 import threading
 import time
 from collections import deque
@@ -20,6 +23,9 @@ ROOT = Path(__file__).resolve().parent
 BOOTSTRAP_ROUNDS = int(os.getenv("FEDERATED_ROUNDS", "6"))
 CYCLE_SECONDS = max(10.5, float(os.getenv("CYCLE_SECONDS", "12")))
 ONLINE_EPOCHS = max(1, int(os.getenv("ONLINE_LOCAL_EPOCHS", "2")))
+PAV_VERSION = "PAV1"
+PAV_ALGORITHM = "HMAC-SHA256"
+PAV_MAX_AGE_SECONDS = max(10.0, float(os.getenv("PAV_MAX_AGE_SECONDS", "60")))
 
 WOKWI_URLS = {
     "austin": os.getenv("WOKWI_AUSTIN_URL", "https://wokwi.com/projects/473854149978000385"),
@@ -38,6 +44,90 @@ NODE_ORIGINS = {
     "tongji": "PUBLISHED_FIELD · TONGJI DATA NODE",
     "virtual": "DISCLOSED_DIGITAL_TWIN · CLOUD NODE",
 }
+
+
+def pav_key(station: str) -> bytes:
+    """Load a station PSK from Render or provision an ephemeral 256-bit key."""
+    configured = os.getenv(f"PAV_KEY_{station.upper()}", "").strip()
+    return configured.encode("utf-8") if configured else secrets.token_bytes(32)
+
+
+def pav_payload_digest(payload: dict) -> str:
+    canonical = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def pav_sign(
+    key: bytes,
+    station: str,
+    message_type: str,
+    sequence: int,
+    payload: dict,
+) -> dict:
+    issued_at_ms = int(time.time() * 1000)
+    nonce = secrets.token_hex(12)
+    payload_sha256 = pav_payload_digest(payload)
+    material = (
+        f"{PAV_VERSION}|{station}|{message_type}|{sequence}|"
+        f"{issued_at_ms}|{nonce}|{payload_sha256}"
+    ).encode("utf-8")
+    return {
+        "version": PAV_VERSION,
+        "algorithm": PAV_ALGORITHM,
+        "station": station,
+        "message_type": message_type,
+        "sequence": int(sequence),
+        "issued_at_ms": issued_at_ms,
+        "nonce": nonce,
+        "payload_sha256": payload_sha256,
+        "tag": hmac.new(key, material, hashlib.sha256).hexdigest(),
+    }
+
+
+def pav_verify(
+    key: bytes,
+    station: str,
+    message_type: str,
+    sequence: int,
+    payload: dict,
+    envelope: dict,
+) -> tuple[bool, str]:
+    if not isinstance(envelope, dict):
+        return False, "missing envelope"
+    try:
+        issued_at_ms = int(envelope["issued_at_ms"])
+        nonce = str(envelope["nonce"])
+        supplied_digest = str(envelope["payload_sha256"])
+        supplied_tag = str(envelope["tag"])
+        envelope_sequence = int(envelope["sequence"])
+    except (KeyError, TypeError, ValueError):
+        return False, "malformed envelope"
+    if envelope.get("version") != PAV_VERSION or envelope.get("algorithm") != PAV_ALGORITHM:
+        return False, "unsupported PAV profile"
+    if envelope.get("station") != station or envelope.get("message_type") != message_type:
+        return False, "identity mismatch"
+    if envelope_sequence != int(sequence):
+        return False, "sequence mismatch"
+    if len(nonce) < 16 or len(supplied_digest) != 64 or len(supplied_tag) != 64:
+        return False, "invalid security field length"
+    if abs(time.time() - issued_at_ms / 1000.0) > PAV_MAX_AGE_SECONDS:
+        return False, "stale timestamp"
+    expected_digest = pav_payload_digest(payload)
+    if not hmac.compare_digest(supplied_digest, expected_digest):
+        return False, "payload digest mismatch"
+    material = (
+        f"{PAV_VERSION}|{station}|{message_type}|{int(sequence)}|"
+        f"{issued_at_ms}|{nonce}|{expected_digest}"
+    ).encode("utf-8")
+    expected_tag = hmac.new(key, material, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(supplied_tag, expected_tag):
+        return False, "authentication tag mismatch"
+    return True, "verified"
 
 
 @dataclass
@@ -59,11 +149,13 @@ class CloudStationNode:
         frame: pd.DataFrame,
         telemetry_bus: queue.Queue,
         start_barrier: threading.Barrier,
+        security_key: bytes,
     ):
         self.station = station
         self.frame = frame.reset_index(drop=True)
         self.telemetry_bus = telemetry_bus
         self.start_barrier = start_barrier
+        self.security_key = security_key
         self.command_bus: queue.Queue[StationCommand] = queue.Queue()
         self.plant = fs.ESP32Plant(station)
         self.row_index = 0
@@ -109,22 +201,28 @@ class CloudStationNode:
         self.sample_cycle += 1
         sensors = self.plant.sense(row)
         self.last_heartbeat = time.time()
-        self.telemetry_bus.put(
-            {
-                "station": self.station,
-                "cycle": self.sample_cycle,
-                "sequence": int(row.sequence),
-                "origin": fs.ORIGINS[self.station],
-                "logical_location": LOGICAL_LOCATIONS[self.station],
-                "emitted_at": self.last_heartbeat,
-                "sensors": sensors,
-                "target_forecast": float(row.forecast_h6),
-                "actuator_feedback": {
-                    "alum": self.plant.alum_percent,
-                    "chlorine": self.plant.chlorine_percent,
-                },
-            }
+        telemetry = {
+            "station": self.station,
+            "cycle": self.sample_cycle,
+            "sequence": int(row.sequence),
+            "origin": fs.ORIGINS[self.station],
+            "logical_location": LOGICAL_LOCATIONS[self.station],
+            "emitted_at": self.last_heartbeat,
+            "sensors": sensors,
+            "target_forecast": float(row.forecast_h6),
+            "actuator_feedback": {
+                "alum": self.plant.alum_percent,
+                "chlorine": self.plant.chlorine_percent,
+            },
+        }
+        telemetry["pav"] = pav_sign(
+            self.security_key,
+            self.station,
+            "TELEMETRY",
+            self.sample_cycle,
+            telemetry,
         )
+        self.telemetry_bus.put(telemetry)
 
     def _run(self):
         self.start_barrier.wait()
@@ -160,6 +258,11 @@ class CloudFederatedEngine:
             fs.initialize_parameters(len(fs.FEATURES), 18, len(fs.TARGETS))
         )
         self.telemetry_bus: queue.Queue[dict] = queue.Queue()
+        self.pav_keys = {station: pav_key(station) for station in fs.STATIONS}
+        self.pav_seen_nonces = {station: deque(maxlen=512) for station in fs.STATIONS}
+        self.pav_nonce_index = {station: set() for station in fs.STATIONS}
+        self.pav_verified = {station: {"telemetry": 0, "model_update": 0} for station in fs.STATIONS}
+        self.pav_rejected = 0
         self.start_barrier = threading.Barrier(len(fs.STATIONS))
         self.nodes = {
             station: CloudStationNode(
@@ -167,12 +270,127 @@ class CloudFederatedEngine:
                 self.splits[station]["test"],
                 self.telemetry_bus,
                 self.start_barrier,
+                self.pav_keys[station],
             )
             for station in fs.STATIONS
         }
         self.latest_telemetry: dict[str, dict] = {}
         self.trace = deque(maxlen=360)
         self.control_cycle = 0
+
+    def _security_state(self, status: str = "PAV VERIFYING") -> dict:
+        verified_stations = sum(
+            1
+            for station in fs.STATIONS
+            if self.pav_verified[station]["telemetry"] > 0
+            and self.pav_verified[station]["model_update"] > 0
+        )
+        return {
+            "layer": "PAV",
+            "profile": "Payload Authentication and Verification",
+            "algorithm": PAV_ALGORITHM,
+            "status": status,
+            "verified_stations": verified_stations,
+            "required_stations": len(fs.STATIONS),
+            "timestamp_freshness": True,
+            "nonce_replay_protection": True,
+            "rejected_messages": self.pav_rejected,
+        }
+
+    def _accept_pav(
+        self,
+        station: str,
+        message_type: str,
+        sequence: int,
+        payload: dict,
+        envelope: dict,
+    ) -> bool:
+        valid, reason = pav_verify(
+            self.pav_keys[station],
+            station,
+            message_type,
+            sequence,
+            payload,
+            envelope,
+        )
+        nonce = str(envelope.get("nonce", "")) if isinstance(envelope, dict) else ""
+        if valid and nonce in self.pav_nonce_index[station]:
+            valid, reason = False, "replayed nonce"
+        if not valid:
+            self.pav_rejected += 1
+            fs.STATE.station(
+                station,
+                pav_status="REJECTED",
+                pav_reason=reason,
+            )
+            fs.STATE.update(security=self._security_state("PAV REJECTED"))
+            fs.STATE.event("security", f"PAV rejected {message_type.lower()}: {reason}", station)
+            return False
+
+        nonces = self.pav_seen_nonces[station]
+        nonce_index = self.pav_nonce_index[station]
+        if len(nonces) == nonces.maxlen:
+            nonce_index.discard(nonces[0])
+        nonces.append(nonce)
+        nonce_index.add(nonce)
+        counter_key = "telemetry" if message_type == "TELEMETRY" else "model_update"
+        self.pav_verified[station][counter_key] += 1
+        fs.STATE.station(
+            station,
+            pav_status="PAV VERIFIED",
+            pav_algorithm=PAV_ALGORITHM,
+            pav_last_type=message_type,
+            pav_verified_at=time.time(),
+        )
+        fully_verified = all(
+            self.pav_verified[item]["telemetry"] > 0
+            and self.pav_verified[item]["model_update"] > 0
+            for item in fs.STATIONS
+        )
+        fs.STATE.update(
+            security=self._security_state("PAV VERIFIED" if fully_verified else "PAV VERIFYING")
+        )
+        return True
+
+    @staticmethod
+    def _update_descriptor(update, round_number: int) -> dict:
+        delta_bytes = update.delta.astype("float32").tobytes()
+        return {
+            "station": update.station,
+            "round": int(round_number),
+            "samples": int(update.samples),
+            "validation_rmse": round(float(update.validation_rmse), 12),
+            "parameters_sha256": update.parameters.digest(),
+            "delta_sha256": hashlib.sha256(delta_bytes).hexdigest(),
+        }
+
+    def _train_signed_update(self, station: str, round_number: int, epochs: int):
+        """Run one private client and sign its update inside that logical runtime."""
+        update = self.clients[station].train_local(round_number, 64, epochs)
+        descriptor = self._update_descriptor(update, round_number)
+        envelope = pav_sign(
+            self.pav_keys[station],
+            station,
+            "MODEL_UPDATE",
+            round_number,
+            descriptor,
+        )
+        return update, descriptor, envelope
+
+    def _authenticate_updates(self, signed_updates: list, round_number: int) -> list:
+        authenticated = []
+        for update, descriptor, envelope in signed_updates:
+            if self._accept_pav(
+                update.station,
+                "MODEL_UPDATE",
+                round_number,
+                descriptor,
+                envelope,
+            ):
+                authenticated.append(update)
+        if len(authenticated) != len(fs.STATIONS):
+            raise RuntimeError("PAV model-update quorum verification failed")
+        return authenticated
 
     def initialize_state(self):
         fs.STATE.update(
@@ -185,9 +403,10 @@ class CloudFederatedEngine:
             deployment={
                 "transport": "CLOUD EVENT BUS",
                 "live_mode": "CLOUD INITIALIZING",
-                "accuracy_scope": "three independent cloud station runtimes with executable local training, relation-guided aggregation, inference and closed-loop actuation",
+                "accuracy_scope": "three independent PAV-authenticated cloud station runtimes with executable local training, relation-guided aggregation, inference and closed-loop actuation",
                 "hardware": "ESP32 plant runtime + Raspberry Pi 4B federated client process",
             },
+            security=self._security_state(),
             broker={
                 "connected": True,
                 "host": "Render cloud event bus",
@@ -210,6 +429,8 @@ class CloudFederatedEngine:
                 source="cloud_station_runtime",
                 logical_location=LOGICAL_LOCATIONS[station],
                 wokwi_url=WOKWI_URLS[station],
+                pav_status="PAV CHECKING",
+                pav_algorithm=PAV_ALGORITHM,
             )
 
     def _train_clients(self, round_number: int, epochs: int):
@@ -223,14 +444,15 @@ class CloudFederatedEngine:
         with ThreadPoolExecutor(max_workers=len(fs.STATIONS)) as pool:
             futures = {
                 station: pool.submit(
-                    self.clients[station].train_local,
+                    self._train_signed_update,
+                    station,
                     round_number,
-                    64,
                     epochs,
                 )
                 for station in fs.STATIONS
             }
-            return [futures[station].result() for station in fs.STATIONS]
+            signed_updates = [futures[station].result() for station in fs.STATIONS]
+        return self._authenticate_updates(signed_updates, round_number)
 
     def bootstrap_federation(self):
         for round_number in range(1, BOOTSTRAP_ROUNDS + 1):
@@ -283,6 +505,16 @@ class CloudFederatedEngine:
                 break
             station = telemetry.get("station")
             if station in fs.STATIONS:
+                envelope = telemetry.get("pav")
+                payload = {key: value for key, value in telemetry.items() if key != "pav"}
+                if not self._accept_pav(
+                    station,
+                    "TELEMETRY",
+                    int(telemetry.get("cycle", -1)),
+                    payload,
+                    envelope,
+                ):
+                    continue
                 batch[station] = telemetry
                 self.latest_telemetry[station] = telemetry
         return batch
@@ -303,6 +535,10 @@ class CloudFederatedEngine:
             relation_scores=aggregation["relation_scores"],
             validation_rmse=aggregation["mean_validation_rmse"],
             global_version=self.cloud.round,
+        )
+        fs.STATE.event(
+            "security",
+            f"PAV verified three HMAC-SHA256 model updates for global version {self.cloud.round}",
         )
         return aggregation
 
@@ -388,9 +624,10 @@ class CloudFederatedEngine:
             deployment={
                 "transport": "CLOUD EVENT BUS",
                 "live_mode": "CLOUD FEDERATED LIVE",
-                "accuracy_scope": "each displayed cycle executes sensor sampling, three private local updates, relation-guided aggregation, global broadcast, H6 inference and acknowledged pump commands",
+                "accuracy_scope": "each displayed cycle verifies PAV-authenticated telemetry and private model updates before relation-guided aggregation, global broadcast, H6 inference and acknowledged pump commands",
                 "hardware": "ESP32 plant runtime + Raspberry Pi 4B federated client process",
             },
+            security=self._security_state("PAV VERIFIED"),
             broker={
                 "connected": True,
                 "host": "Render cloud event bus",
