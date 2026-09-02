@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="Executable three-station RG-AdaFedResidual cloud federated water-treatment laboratory.">
   <title>RG-AdaFedResidual Cloud Federated Laboratory</title>
-  <link rel="stylesheet" href="styles.css?v=13">
+  <link rel="stylesheet" href="styles.css?v=14">
 </head>
 <body>
 <main class="page">
@@ -32,7 +32,7 @@
     <span class="step" data-key="edge" data-n="2" style="--stage:#1787ff">ESP32 acquisition</span>
     <span class="step" data-key="local" data-n="3" style="--stage:#8954ff">Local learning</span>
     <span class="step" data-key="upload" data-n="4" style="--stage:#8954ff">Upload weights</span>
-    <span class="step" data-key="verify" data-n="5" style="--stage:#0aa873">PAV verification</span>
+    <span class="step" data-key="verify" data-n="5" style="--stage:#ed4658">PAV verification</span>
     <span class="step" data-key="aggregate" data-n="6" style="--stage:#8954ff">Cloud aggregation</span>
     <span class="step" data-key="broadcast" data-n="7" style="--stage:#10ad72">Global broadcast</span>
     <span class="step" data-key="actuate" data-n="8" style="--stage:#ed4658">Pump actuation</span>
@@ -80,11 +80,11 @@
       <path class="global-down" d="M600 24 C600 115 600 170 600 305"/>
       <path class="global-down" d="M600 24 C680 72 770 82 850 110 C930 135 1010 225 1045 305"/>
 
-      <rect class="pav-boundary" x="82" y="82" width="1036" height="62" rx="22"/>
-      <text class="pav-boundary-label" x="103" y="96">PAV SECURITY PATH</text>
-      <g class="pav-gateway-visual" transform="translate(350 113)"><rect x="-71" y="-22" width="142" height="44" rx="13"/><circle cx="-53" cy="0" r="6"/><text class="gate-title" x="10" y="-3" text-anchor="middle">PAV VERIFY</text><text class="gate-detail" x="10" y="11" text-anchor="middle">AUSTIN · HMAC-SHA256</text></g>
-      <g class="pav-gateway-visual" transform="translate(600 113)"><rect x="-71" y="-22" width="142" height="44" rx="13"/><circle cx="-53" cy="0" r="6"/><text class="gate-title" x="10" y="-3" text-anchor="middle">PAV VERIFY</text><text class="gate-detail" x="10" y="11" text-anchor="middle">TONGJI · HMAC-SHA256</text></g>
-      <g class="pav-gateway-visual" transform="translate(850 113)"><rect x="-71" y="-22" width="142" height="44" rx="13"/><circle cx="-53" cy="0" r="6"/><text class="gate-title" x="10" y="-3" text-anchor="middle">PAV VERIFY</text><text class="gate-detail" x="10" y="11" text-anchor="middle">DIGITAL TWIN · HMAC</text></g>
+      <rect class="pav-boundary" x="96" y="88" width="1008" height="50" rx="18"/>
+      <text class="pav-boundary-label" x="114" y="100">PAV SECURITY PATH</text>
+      <g class="pav-gateway-visual" transform="translate(350 113)"><rect x="-62" y="-18" width="124" height="36" rx="11"/><circle cx="-47" cy="0" r="5"/><text class="gate-title" x="8" y="-2" text-anchor="middle">PAV VERIFY</text><text class="gate-detail" x="8" y="9" text-anchor="middle">AUSTIN · HMAC-SHA256</text></g>
+      <g class="pav-gateway-visual" transform="translate(600 113)"><rect x="-62" y="-18" width="124" height="36" rx="11"/><circle cx="-47" cy="0" r="5"/><text class="gate-title" x="8" y="-2" text-anchor="middle">PAV VERIFY</text><text class="gate-detail" x="8" y="9" text-anchor="middle">TONGJI · HMAC-SHA256</text></g>
+      <g class="pav-gateway-visual" transform="translate(850 113)"><rect x="-62" y="-18" width="124" height="36" rx="11"/><circle cx="-47" cy="0" r="5"/><text class="gate-title" x="8" y="-2" text-anchor="middle">PAV VERIFY</text><text class="gate-detail" x="8" y="9" text-anchor="middle">DIGITAL TWIN · HMAC</text></g>
 
       <circle class="global-ball upload" r="7"><animateMotion id="uploadMotion-0" begin="indefinite" dur="1.05s" fill="freeze" path="M155 305 C190 225 270 135 350 110"/></circle>
       <circle class="global-ball upload" r="7"><animateMotion id="uploadMotion-1" begin="indefinite" dur="1.05s" fill="freeze" path="M600 305 L600 110"/></circle>
@@ -114,6 +114,6 @@
   </section>
   <section class="panel summary"><h3>Live water-quality acceptance</h3><div id="summary" class="empty">Acceptance statistics will appear after regulation cycles finish.</div></section>
 </main>
-<script src="app.js?v=13"></script>
+<script src="app.js?v=14"></script>
 </body>
 </html>

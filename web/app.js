@@ -12,7 +12,7 @@ const stages = [
   { key: 'edge', label: 'ESP32 acquisition', color: '#1787ff', duration: 850 },
   { key: 'local', label: 'Raspberry Pi local learning', color: '#8954ff', duration: 1250 },
   { key: 'upload', label: 'Uploading local weights', color: '#8954ff', duration: 1300 },
-  { key: 'verify', label: 'PAV authenticating three signed updates', color: '#0aa873', duration: 1150 },
+  { key: 'verify', label: 'PAV authenticating three signed updates', color: '#ed4658', duration: 1150 },
   { key: 'aggregate', label: 'Relation-guided aggregation', color: '#8954ff', duration: 1200 },
   { key: 'broadcast', label: 'Broadcasting global update', color: '#10ad72', duration: 1300 },
   { key: 'actuate', label: 'Applying dosing commands', color: '#ed4658', duration: 2600 },
