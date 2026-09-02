@@ -365,7 +365,10 @@ function runStage(index, state, token) {
     if (stage.key === 'edge') restartLane('.lane-ball.edge');
     if (stage.key === 'local') order.forEach(id => updateStationProcess(id, state.stations?.[id] || {}));
     if (stage.key === 'upload') for (let i = 0; i < 3; i += 1) showSvgMotion(`uploadMotion-${i}`, i * 100, 1400);
-    if (stage.key === 'verify') updateSecurity(state);
+    if (stage.key === 'verify') {
+      updateSecurity(state);
+      for (let i = 0; i < 3; i += 1) showSvgMotion(`verifyMotion-${i}`, 340 + i * 85, 1050);
+    }
     if (stage.key === 'aggregate') {
       document.querySelector('#cloudStatus').textContent = state.cloud?.status || 'Relation-guided aggregation';
       document.querySelector('#hash').textContent = state.cloud?.weights_hash || '—';

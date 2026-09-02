@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="Executable three-station RG-AdaFedResidual cloud federated water-treatment laboratory.">
   <title>RG-AdaFedResidual Cloud Federated Laboratory</title>
-  <link rel="stylesheet" href="styles.css?v=12">
+  <link rel="stylesheet" href="styles.css?v=13">
 </head>
 <body>
 <main class="page">
@@ -67,21 +67,34 @@
     </div>
 
     <svg class="global-links" viewBox="0 0 1200 315" preserveAspectRatio="none" aria-hidden="true">
-      <path class="global-base" d="M600 24 C520 105 245 82 155 305"/>
+      <path class="global-base" d="M600 24 C520 72 430 82 350 110 C270 135 190 225 155 305"/>
       <path class="global-base" d="M600 24 C600 115 600 170 600 305"/>
-      <path class="global-base" d="M600 24 C680 105 955 82 1045 305"/>
-      <path class="global-up" d="M155 305 C245 82 520 105 600 24"/>
-      <path class="global-up" d="M600 305 C600 170 600 115 600 24"/>
-      <path class="global-up" d="M1045 305 C955 82 680 105 600 24"/>
-      <path class="global-down" d="M600 24 C520 105 245 82 155 305"/>
+      <path class="global-base" d="M600 24 C680 72 770 82 850 110 C930 135 1010 225 1045 305"/>
+      <path class="global-up" d="M155 305 C190 225 270 135 350 110"/>
+      <path class="global-up" d="M600 305 L600 110"/>
+      <path class="global-up" d="M1045 305 C1010 225 930 135 850 110"/>
+      <path class="global-verified" d="M350 110 C430 82 520 72 600 24"/>
+      <path class="global-verified" d="M600 110 L600 24"/>
+      <path class="global-verified" d="M850 110 C770 82 680 72 600 24"/>
+      <path class="global-down" d="M600 24 C520 72 430 82 350 110 C270 135 190 225 155 305"/>
       <path class="global-down" d="M600 24 C600 115 600 170 600 305"/>
-      <path class="global-down" d="M600 24 C680 105 955 82 1045 305"/>
-      <circle class="global-ball upload" r="7"><animateMotion id="uploadMotion-0" begin="indefinite" dur="1.15s" fill="freeze" path="M155 305 C245 82 520 105 600 24"/></circle>
-      <circle class="global-ball upload" r="7"><animateMotion id="uploadMotion-1" begin="indefinite" dur="1.15s" fill="freeze" path="M600 305 C600 170 600 115 600 24"/></circle>
-      <circle class="global-ball upload" r="7"><animateMotion id="uploadMotion-2" begin="indefinite" dur="1.15s" fill="freeze" path="M1045 305 C955 82 680 105 600 24"/></circle>
-      <circle class="global-ball broadcast" r="7"><animateMotion id="broadcastMotion-0" begin="indefinite" dur="1.15s" fill="freeze" path="M600 24 C520 105 245 82 155 305"/></circle>
+      <path class="global-down" d="M600 24 C680 72 770 82 850 110 C930 135 1010 225 1045 305"/>
+
+      <rect class="pav-boundary" x="82" y="82" width="1036" height="62" rx="22"/>
+      <text class="pav-boundary-label" x="103" y="96">PAV SECURITY PATH</text>
+      <g class="pav-gateway-visual" transform="translate(350 113)"><rect x="-71" y="-22" width="142" height="44" rx="13"/><circle cx="-53" cy="0" r="6"/><text class="gate-title" x="10" y="-3" text-anchor="middle">PAV VERIFY</text><text class="gate-detail" x="10" y="11" text-anchor="middle">AUSTIN · HMAC-SHA256</text></g>
+      <g class="pav-gateway-visual" transform="translate(600 113)"><rect x="-71" y="-22" width="142" height="44" rx="13"/><circle cx="-53" cy="0" r="6"/><text class="gate-title" x="10" y="-3" text-anchor="middle">PAV VERIFY</text><text class="gate-detail" x="10" y="11" text-anchor="middle">TONGJI · HMAC-SHA256</text></g>
+      <g class="pav-gateway-visual" transform="translate(850 113)"><rect x="-71" y="-22" width="142" height="44" rx="13"/><circle cx="-53" cy="0" r="6"/><text class="gate-title" x="10" y="-3" text-anchor="middle">PAV VERIFY</text><text class="gate-detail" x="10" y="11" text-anchor="middle">DIGITAL TWIN · HMAC</text></g>
+
+      <circle class="global-ball upload" r="7"><animateMotion id="uploadMotion-0" begin="indefinite" dur="1.05s" fill="freeze" path="M155 305 C190 225 270 135 350 110"/></circle>
+      <circle class="global-ball upload" r="7"><animateMotion id="uploadMotion-1" begin="indefinite" dur="1.05s" fill="freeze" path="M600 305 L600 110"/></circle>
+      <circle class="global-ball upload" r="7"><animateMotion id="uploadMotion-2" begin="indefinite" dur="1.05s" fill="freeze" path="M1045 305 C1010 225 930 135 850 110"/></circle>
+      <circle class="global-ball verified" r="7"><animateMotion id="verifyMotion-0" begin="indefinite" dur=".78s" fill="freeze" path="M350 110 C430 82 520 72 600 24"/></circle>
+      <circle class="global-ball verified" r="7"><animateMotion id="verifyMotion-1" begin="indefinite" dur=".78s" fill="freeze" path="M600 110 L600 24"/></circle>
+      <circle class="global-ball verified" r="7"><animateMotion id="verifyMotion-2" begin="indefinite" dur=".78s" fill="freeze" path="M850 110 C770 82 680 72 600 24"/></circle>
+      <circle class="global-ball broadcast" r="7"><animateMotion id="broadcastMotion-0" begin="indefinite" dur="1.15s" fill="freeze" path="M600 24 C520 72 430 82 350 110 C270 135 190 225 155 305"/></circle>
       <circle class="global-ball broadcast" r="7"><animateMotion id="broadcastMotion-1" begin="indefinite" dur="1.15s" fill="freeze" path="M600 24 C600 115 600 170 600 305"/></circle>
-      <circle class="global-ball broadcast" r="7"><animateMotion id="broadcastMotion-2" begin="indefinite" dur="1.15s" fill="freeze" path="M600 24 C680 105 955 82 1045 305"/></circle>
+      <circle class="global-ball broadcast" r="7"><animateMotion id="broadcastMotion-2" begin="indefinite" dur="1.15s" fill="freeze" path="M600 24 C680 72 770 82 850 110 C930 135 1010 225 1045 305"/></circle>
     </svg>
     <div id="stations" class="stations"></div>
   </section>
@@ -101,6 +114,6 @@
   </section>
   <section class="panel summary"><h3>Live water-quality acceptance</h3><div id="summary" class="empty">Acceptance statistics will appear after regulation cycles finish.</div></section>
 </main>
-<script src="app.js?v=12"></script>
+<script src="app.js?v=13"></script>
 </body>
 </html>
