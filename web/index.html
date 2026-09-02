@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="Executable three-station RG-AdaFedResidual cloud federated water-treatment laboratory.">
   <title>RG-AdaFedResidual Cloud Federated Laboratory</title>
-  <link rel="stylesheet" href="styles.css?v=11">
+  <link rel="stylesheet" href="styles.css?v=12">
 </head>
 <body>
 <main class="page">
@@ -32,10 +32,26 @@
     <span class="step" data-key="edge" data-n="2" style="--stage:#1787ff">ESP32 acquisition</span>
     <span class="step" data-key="local" data-n="3" style="--stage:#8954ff">Local learning</span>
     <span class="step" data-key="upload" data-n="4" style="--stage:#8954ff">Upload weights</span>
-    <span class="step" data-key="aggregate" data-n="5" style="--stage:#8954ff">Cloud aggregation</span>
-    <span class="step" data-key="broadcast" data-n="6" style="--stage:#10ad72">Global broadcast</span>
-    <span class="step" data-key="actuate" data-n="7" style="--stage:#ed4658">Pump actuation</span>
+    <span class="step" data-key="verify" data-n="5" style="--stage:#0aa873">PAV verification</span>
+    <span class="step" data-key="aggregate" data-n="6" style="--stage:#8954ff">Cloud aggregation</span>
+    <span class="step" data-key="broadcast" data-n="7" style="--stage:#10ad72">Global broadcast</span>
+    <span class="step" data-key="actuate" data-n="8" style="--stage:#ed4658">Pump actuation</span>
   </nav>
+
+  <section id="pavLayer" class="pav-layer" data-status="checking" aria-label="PAV security layer">
+    <div class="pav-identity">
+      <span class="pav-shield" aria-hidden="true">✓</span>
+      <span><strong>PAV security layer</strong><small>Payload Authentication and Verification</small></span>
+    </div>
+    <div class="pav-controls">
+      <span><i></i><b id="pavAlgorithm">HMAC-SHA256</b><small>message authentication</small></span>
+      <span><i></i><b>Timestamp freshness</b><small>stale traffic rejected</small></span>
+      <span><i></i><b>Nonce replay guard</b><small>duplicate traffic rejected</small></span>
+    </div>
+    <div class="pav-result">
+      <span><strong id="pavStatus">PAV CHECKING</strong><small><span id="pavVerified">0</span>/<span id="pavRequired">3</span> station channels verified · rejected <span id="pavRejected">0</span></small></span>
+    </div>
+  </section>
 
   <section id="architecture" class="architecture" data-stage="standby">
     <div class="arch-label">
@@ -85,6 +101,6 @@
   </section>
   <section class="panel summary"><h3>Live water-quality acceptance</h3><div id="summary" class="empty">Acceptance statistics will appear after regulation cycles finish.</div></section>
 </main>
-<script src="app.js?v=11"></script>
+<script src="app.js?v=12"></script>
 </body>
 </html>

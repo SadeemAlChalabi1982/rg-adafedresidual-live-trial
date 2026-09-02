@@ -12,6 +12,7 @@ const stages = [
   { key: 'edge', label: 'ESP32 acquisition', color: '#1787ff', duration: 850 },
   { key: 'local', label: 'Raspberry Pi local learning', color: '#8954ff', duration: 1250 },
   { key: 'upload', label: 'Uploading local weights', color: '#8954ff', duration: 1300 },
+  { key: 'verify', label: 'PAV authenticating three signed updates', color: '#0aa873', duration: 1150 },
   { key: 'aggregate', label: 'Relation-guided aggregation', color: '#8954ff', duration: 1200 },
   { key: 'broadcast', label: 'Broadcasting global update', color: '#10ad72', duration: 1300 },
   { key: 'actuate', label: 'Applying dosing commands', color: '#ed4658', duration: 2600 },
@@ -83,7 +84,7 @@ function stationShell(id, station) {
       <em>${['filtered_turbidity', 'flow', 'residual_chlorine'].includes(key) ? 'digital twin' : 'sensor channel'}</em>
     </div>`).join('');
   return `<article id="station-${id}" class="station">
-    <div class="station-head"><div><h2 id="${id}-name">${esc(station.name || id)}</h2><div id="${id}-origin" class="origin">${esc(station.origin || '—')}</div></div><span id="${id}-online" class="online">OFFLINE</span></div>
+    <div class="station-head"><div><h2 id="${id}-name">${esc(station.name || id)}</h2><div id="${id}-origin" class="origin">${esc(station.origin || '—')}</div></div><div class="station-badges"><span id="${id}-online" class="online">OFFLINE</span><span id="${id}-pav" class="pav-badge">PAV CHECKING</span></div></div>
     <div class="sensor-grid">${sensors}</div>
     ${sensorMotionMarkup(id)}
     <div class="hardware">
@@ -117,6 +118,11 @@ function updateStationStatus(id, station) {
   document.querySelector(`#${id}-online`).textContent = connectionState;
   document.querySelector(`#${id}-name`).textContent = station.name || id;
   document.querySelector(`#${id}-origin`).textContent = station.origin || '—';
+  const pavBadge = document.querySelector(`#${id}-pav`);
+  const pavStatus = station.pav_status || 'PAV CHECKING';
+  pavBadge.textContent = pavStatus;
+  pavBadge.classList.toggle('verified', pavStatus === 'PAV VERIFIED');
+  pavBadge.classList.toggle('rejected', pavStatus === 'REJECTED');
   const link = document.querySelector(`#${id}-link`);
   if (station.wokwi_url) {
     link.href = station.wokwi_url;
@@ -125,6 +131,18 @@ function updateStationStatus(id, station) {
     link.removeAttribute('href');
     link.classList.add('pending');
   }
+}
+
+function updateSecurity(state) {
+  const security = state.security || {};
+  const layer = document.querySelector('#pavLayer');
+  const status = security.status || 'PAV CHECKING';
+  layer.dataset.status = status.includes('REJECTED') ? 'rejected' : status.includes('VERIFIED') ? 'verified' : 'checking';
+  document.querySelector('#pavStatus').textContent = status;
+  document.querySelector('#pavAlgorithm').textContent = security.algorithm || 'HMAC-SHA256';
+  document.querySelector('#pavVerified').textContent = Number(security.verified_stations || 0);
+  document.querySelector('#pavRequired').textContent = Number(security.required_stations || order.length);
+  document.querySelector('#pavRejected').textContent = Number(security.rejected_messages || 0);
 }
 
 function enterStrictStandby(state) {
@@ -145,6 +163,7 @@ function enterStrictStandby(state) {
   }
   standbyApplied = true;
   const architecture = document.querySelector('#architecture');
+  document.querySelector('#pavLayer').classList.remove('active');
   architecture.dataset.stage = 'standby';
   architecture.style.setProperty('--stage-color', '#94a3b8');
   document.querySelector('#visualStage').textContent = isCloud
@@ -195,6 +214,7 @@ function enterHoldState(state) {
   document.querySelectorAll('.global-ball,.sensor-ball,.command-ball').forEach(ball => ball.classList.remove('visible'));
   document.querySelectorAll('.lane-ball').forEach(ball => ball.classList.remove('go'));
   const architecture = document.querySelector('#architecture');
+  document.querySelector('#pavLayer').classList.remove('active');
   architecture.dataset.stage = 'hold';
   architecture.style.setProperty('--stage-color', '#f3a21c');
   document.querySelector('#visualStage').textContent = 'Holding last validated state';
@@ -328,6 +348,7 @@ function runStage(index, state, token) {
   architecture.style.setProperty('--stage-color', stage.color);
   document.querySelector('#visualStage').textContent = stage.label;
   document.querySelectorAll('.step').forEach(element => element.classList.toggle('active', element.dataset.key === stage.key));
+  document.querySelector('#pavLayer').classList.toggle('active', stage.key === 'verify');
   if (!motionPaused) {
     if (stage.key === 'sensor') {
       document.querySelectorAll('.pump.received').forEach(pump => pump.classList.remove('received'));
@@ -344,6 +365,7 @@ function runStage(index, state, token) {
     if (stage.key === 'edge') restartLane('.lane-ball.edge');
     if (stage.key === 'local') order.forEach(id => updateStationProcess(id, state.stations?.[id] || {}));
     if (stage.key === 'upload') for (let i = 0; i < 3; i += 1) showSvgMotion(`uploadMotion-${i}`, i * 100, 1400);
+    if (stage.key === 'verify') updateSecurity(state);
     if (stage.key === 'aggregate') {
       document.querySelector('#cloudStatus').textContent = state.cloud?.status || 'Relation-guided aggregation';
       document.querySelector('#hash').textContent = state.cloud?.weights_hash || '—';
@@ -455,6 +477,7 @@ async function refresh() {
     document.querySelector('#maxRound').textContent = state.max_rounds;
     ensureStations(state.stations || {});
     order.forEach(id => updateStationStatus(id, state.stations?.[id] || {}));
+    updateSecurity(state);
     latestState = state;
     const nextCycle = Number(state.live_cycle || 0);
     if (isLive && nextCycle > 0 && nextCycle !== activeCycle) {
