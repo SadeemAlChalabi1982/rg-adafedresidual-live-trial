@@ -5,10 +5,10 @@ import network
 import onewire
 import time
 
-from umqtt.simple import MQTTClient
+from mqtt_simple import MQTTClient
 
 
-TOPIC_ROOT = "rgaf-sadeem-paper3-live-20260831-v1"
+TOPIC_ROOT = "rgaf-sadeem-paper3-linked-20260909-v1"
 MQTT_HOST = "broker.hivemq.com"  # Public trial broker; contains no private measurements
 MQTT_PORT = 1883
 WIFI_SSID = "Wokwi-GUEST"
@@ -25,12 +25,9 @@ ADC_PINS = {
 }
 TEMPERATURE_PIN = 33
 
-# Visible boot diagnostics on the physical diagram:
-# orange = firmware running, blue = Wi-Fi ready, green = MQTT ready.
-Pin(27, Pin.OUT).value(1)
+class LCD2004:
+    """Native blue HD44780 20x4 display through its PCF8574 I2C adapter."""
 
-
-class LCD1602:
     def __init__(self, i2c, address=0x27):
         self.i2c, self.address, self.backlight = i2c, address, 0x08
         time.sleep_ms(40)
@@ -50,8 +47,12 @@ class LCD1602:
 
     def line(self, row, text):
         self.send(0x80 | (0, 0x40, 0x14, 0x54)[row])
-        for char in (str(text) + " " * 20)[:20]:
+        for char in (str(text).upper() + " " * 20)[:20]:
             self.send(ord(char), 1)
+
+    def render(self, rows):
+        for row, text in enumerate(rows):
+            self.line(row, text)
 
 
 def station_id():
@@ -75,44 +76,124 @@ def adc_value(name):
     return 0.02 + 0.78 * ratio
 
 
+def sample_local_sensors():
+    """Refresh every physical/emulated sensor channel as one coherent sample."""
+    global sequence
+    sequence += 1
+    for name in ADC_PINS:
+        sensors[name] = adc_value(name)
+    if temperature_roms:
+        temperature_bus.convert_temp()
+        service_visuals(750)
+        sensors["temperature"] = temperature_bus.read_temp(temperature_roms[0])
+    sensors["raw_delta"] = max(
+        0.0, sensors["raw_turbidity"] - sensors["filtered_turbidity"]
+    )
+
+
+def local_control_targets():
+    """Compute safe visible setpoints while no fresh cloud command is available."""
+    turbidity_load = max(
+        0.0, sensors["raw_turbidity"] - sensors["filtered_turbidity"]
+    )
+    chlorine_deficit = max(0.0, 0.35 - sensors["residual_chlorine"])
+    alum = min(88.0, max(8.0, 12.0 + 2.4 * turbidity_load))
+    chlorine = min(72.0, max(10.0, 24.0 + 95.0 * chlorine_deficit))
+    return alum, chlorine
+
+
 def servo(pwm, percent):
+    """Map a dosing percentage to the servo's full 0-180 degree travel."""
     percent = min(100.0, max(0.0, float(percent)))
     pwm.duty_ns(int(500 + 19 * percent) * 1000)
 
 
-def set_pumps(alum, chlorine, animate=False):
-    global alum_percent, chlorine_percent
-    alum_percent = min(100.0, max(0.0, float(alum)))
-    chlorine_percent = min(100.0, max(0.0, float(chlorine)))
-    if animate:
-        alum_excursion = alum_percent + (12 if alum_percent <= 88 else -12)
-        chlorine_excursion = chlorine_percent + (12 if chlorine_percent <= 88 else -12)
-        servo(alum_pwm, alum_excursion)
-        servo(chlorine_pwm, chlorine_excursion)
+def status_light(milliseconds=1200):
+    """Keep the MQTT/activity lamp visible for the complete current event."""
+    global status_hold_until
+    online_led.value(1)
+    status_hold_until = time.ticks_add(time.ticks_ms(), milliseconds)
+
+
+def pulse_pump_lights(milliseconds=1000):
+    """Illuminate each dosing channel long enough to be clearly observable."""
+    global alum_light_until, chlorine_light_until
+    now = time.ticks_ms()
+    if alum_percent >= 0.5:
         alum_led.value(1)
+        alum_light_until = time.ticks_add(now, milliseconds)
+    if chlorine_percent >= 0.5:
         chlorine_led.value(1)
-        time.sleep_ms(160)
-    servo(alum_pwm, alum_percent)
-    servo(chlorine_pwm, chlorine_percent)
-    if animate:
-        for _ in range(2):
-            alum_led.value(0)
-            chlorine_led.value(0)
-            time.sleep_ms(80)
-            alum_led.value(alum_percent > 1)
-            chlorine_led.value(chlorine_percent > 1)
-            time.sleep_ms(80)
-    else:
-        alum_led.value(alum_percent > 1)
-        chlorine_led.value(chlorine_percent > 1)
+        chlorine_light_until = time.ticks_add(now, milliseconds)
+
+
+def update_pump_lights(now=None):
+    if now is None:
+        now = time.ticks_ms()
+    if time.ticks_diff(now, alum_light_until) >= 0:
+        alum_led.value(0)
+    if time.ticks_diff(now, chlorine_light_until) >= 0:
+        chlorine_led.value(0)
     alarm_led.value(max(alum_percent, chlorine_percent) >= 90)
 
 
+def update_pump_motion(now=None):
+    """Continuously reciprocate each metering pump at its commanded amplitude."""
+    global pump_cycle_started, last_pump_frame
+    if now is None:
+        now = time.ticks_ms()
+    if time.ticks_diff(now, last_pump_frame) < 70:
+        update_pump_lights(now)
+        return
+    elapsed = time.ticks_diff(now, pump_cycle_started)
+    if elapsed < 0 or elapsed >= 2400:
+        pump_cycle_started = now
+        elapsed = 0
+        pulse_pump_lights(1000)
+    progress = elapsed / 1200.0
+    stroke = progress if progress <= 1.0 else 2.0 - progress
+    stroke = min(1.0, max(0.0, stroke))
+    servo(alum_pwm, alum_percent * stroke)
+    servo(chlorine_pwm, chlorine_percent * stroke)
+    last_pump_frame = now
+    update_pump_lights(now)
+
+
+def service_visuals(milliseconds=0):
+    """Keep pumps and lamps alive during sensor, cloud, and retry waits."""
+    started = time.ticks_ms()
+    while True:
+        now = time.ticks_ms()
+        update_pump_motion(now)
+        if time.ticks_diff(now, started) >= milliseconds:
+            return
+        time.sleep_ms(35)
+
+
+def set_pumps(alum, chlorine, animate=False, restart=True):
+    global alum_percent, chlorine_percent, pump_cycle_started, last_pump_frame
+    alum_percent = min(100.0, max(0.0, float(alum)))
+    chlorine_percent = min(100.0, max(0.0, float(chlorine)))
+    if restart:
+        pump_cycle_started = time.ticks_ms()
+        last_pump_frame = time.ticks_add(pump_cycle_started, -100)
+        servo(alum_pwm, 0)
+        servo(chlorine_pwm, 0)
+        pulse_pump_lights(1000)
+    update_pump_motion()
+    if animate:
+        display("PUMP RUN")
+
+
 def display(mode):
-    lcd.line(0, "%s R%d" % (station, global_round))
-    lcd.line(1, "Raw %.2f F %.2f" % (sensors["raw_turbidity"], sensors["filtered_turbidity"]))
-    lcd.line(2, "pH %.2f Cl %.2f" % (sensors["ph"], sensors["residual_chlorine"]))
-    lcd.line(3, "%s A%.0f C%.0f" % (mode, alum_percent, chlorine_percent))
+    lcd.render(
+        (
+            "%s R%d" % (station, global_round),
+            "RAW %.2f F %.2f" % (sensors["raw_turbidity"], sensors["filtered_turbidity"]),
+            "PH %.2f CL %.2f" % (sensors["ph"], sensors["residual_chlorine"]),
+            "%s A%.0f C%.0f" % (mode, alum_percent, chlorine_percent),
+        )
+    )
 
 
 def publish_telemetry(source):
@@ -126,11 +207,17 @@ def publish_telemetry(source):
         "global_round": global_round,
         "uptime_ms": time.ticks_ms(),
     }
-    client.publish(topic("telemetry"), json.dumps(payload).encode(), qos=0)
+    cloud_uplink_signal.value(1)
+    try:
+        client.publish(topic("telemetry"), json.dumps(payload).encode(), qos=0)
+        status_light(900)
+        service_visuals(900)
+    finally:
+        cloud_uplink_signal.value(0)
 
 
 def on_message(received, body):
-    global sequence, global_round, injected
+    global sequence, global_round, injected, cloud_command_received
     try:
         doc = json.loads(body.decode())
         if received == topic("inject"):
@@ -139,16 +226,55 @@ def on_message(received, body):
                 if key in doc:
                     sensors[key] = float(doc[key])
             injected = True
+            status_light(1200)
             publish_telemetry(doc.get("origin", "python_edge_simulator"))
             display("SENSE")
         elif received == topic("command"):
             global_round = int(doc.get("global_round", global_round))
-            set_pumps(doc.get("alum_percent", 0), doc.get("chlorine_percent", 0), animate=True)
-            display("REGULATE")
+            requested_alum = float(doc.get("alum_percent", 0))
+            requested_chlorine = float(doc.get("chlorine_percent", 0))
+            command_mode = str(doc.get("mode", ""))
+            cloud_downlink_signal.value(1)
+            try:
+                # The legacy public MQTT service publishes a zero-output
+                # safety interlock whenever fewer than three Wokwi tabs are
+                # open.  This station diagram is also designed to operate as
+                # an independent visual plant, so that waiting command must
+                # not erase the last valid/local dosing command and freeze
+                # both pump shafts.  Genuine model commands, including any
+                # intentional non-interlock zero command, still take effect.
+                waiting_interlock = (
+                    requested_alum <= 0.0
+                    and requested_chlorine <= 0.0
+                    and "SAFETY_INTERLOCK_WAITING" in command_mode
+                )
+                if waiting_interlock:
+                    cloud_command_received = False
+                    local_alum, local_chlorine = local_control_targets()
+                    set_pumps(local_alum, local_chlorine, restart=False)
+                    display("LOCAL HOLD")
+                else:
+                    cloud_command_received = True
+                    set_pumps(
+                        requested_alum,
+                        requested_chlorine,
+                        animate=True,
+                    )
+                    display("REGULATE")
+                status_light(1000)
+                service_visuals(1000)
+            finally:
+                cloud_downlink_signal.value(0)
             print("PUMPS A=%.1f%% C=%.1f%%" % (alum_percent, chlorine_percent))
         elif received == topic("weights"):
             global_round = int(doc.get("global_round", global_round))
-            display("WEIGHTS RX")
+            cloud_downlink_signal.value(1)
+            try:
+                status_light(1500)
+                display("WEIGHTS RX")
+                service_visuals(1000)
+            finally:
+                cloud_downlink_signal.value(0)
             print("GLOBAL MODEL", doc.get("weights_hash", "—"), "ROUND", global_round)
     except Exception as error:
         print("MQTT payload error", error)
@@ -170,30 +296,39 @@ def connect_wifi():
     while not wlan.isconnected():
         if time.ticks_diff(time.ticks_ms(), started) >= 12000:
             raise OSError("WiFi connection timeout")
-        time.sleep_ms(150)
+        service_visuals(150)
     print("WIFI connected", wlan.ifconfig()[0])
 
 
 def connect_mqtt():
     global client
+    display("MQTT CONNECT")
     session_suffix = time.ticks_ms() & 0xFFFF
     client_id = ("rgaf-%s-%04x" % (station, session_suffix)).encode()
     client = MQTTClient(client_id, MQTT_HOST, port=MQTT_PORT, keepalive=30)
     client.set_callback(on_message)
     client.set_last_will(topic("status"), b"offline", retain=True, qos=0)
-    client.connect(clean_session=True)
+    # The local client enforces this timeout. It prevents the simulator from
+    # remaining forever at WIFI RETRY when a public gateway route is slow.
+    client.connect(clean_session=True, timeout=8)
     for name in ("inject", "command", "weights"):
         client.subscribe(topic(name), qos=0)
     client.publish(topic("status"), b"online", retain=True, qos=0)
-    online_led.value(1)
+    # Publish one complete snapshot immediately so the cloud freshness gate
+    # does not have to wait for the first injected control-cycle row.
+    publish_telemetry("wokwi_startup_snapshot")
+    status_light(1800)
     display("MQTT ONLINE")
     print("MQTT connected", MQTT_HOST, station)
     print("ONLINE", station, "ESP32 -> Raspberry Pi -> Federated Cloud")
 
 
 def drop_mqtt():
-    global client
+    global client, cloud_command_received
     online_led.value(0)
+    cloud_uplink_signal.value(0)
+    cloud_downlink_signal.value(0)
+    cloud_command_received = False
     if client is not None:
         try:
             client.disconnect()
@@ -217,14 +352,37 @@ temperature_roms = temperature_bus.scan()
 alum_pwm, chlorine_pwm = PWM(Pin(25), freq=50), PWM(Pin(26), freq=50)
 online_led, alum_led = Pin(2, Pin.OUT), Pin(27, Pin.OUT)
 chlorine_led, alarm_led = Pin(14, Pin.OUT), Pin(13, Pin.OUT)
-lcd = LCD1602(I2C(0, sda=Pin(21), scl=Pin(22), freq=400000))
+cloud_uplink_signal = Pin(16, Pin.OUT)
+cloud_downlink_signal = Pin(17, Pin.OUT)
+lcd = LCD2004(I2C(0, scl=Pin(22), sda=Pin(21), freq=400000))
 sequence = global_round = 0
 alum_percent = chlorine_percent = 0.0
 injected = False
+cloud_command_received = False
+status_hold_until = 0
+alum_light_until = 0
+chlorine_light_until = 0
+pump_cycle_started = time.ticks_ms()
+last_pump_frame = time.ticks_add(pump_cycle_started, -100)
 
 wlan = network.WLAN(network.STA_IF)
 client = None
 set_pumps(0, 0)
+
+# Visible one-second lamp test confirms all four LED channels and wiring.
+for led in (online_led, alum_led, chlorine_led, alarm_led):
+    led.value(1)
+time.sleep_ms(1000)
+for led in (online_led, alum_led, chlorine_led, alarm_led):
+    led.value(0)
+
+# Show a genuine sensor-driven PWM stroke immediately at startup. Network
+# negotiation can take several seconds on the public gateway, but the local
+# acquisition/control path must remain observable during that interval.
+sample_local_sensors()
+startup_alum, startup_chlorine = local_control_targets()
+set_pumps(startup_alum, startup_chlorine, animate=True)
+display("LOCAL CTRL")
 
 last_local = time.ticks_ms()
 last_status = time.ticks_ms()
@@ -240,33 +398,47 @@ while True:
             last_status = time.ticks_ms()
         except Exception as error:
             drop_mqtt()
+            sample_local_sensors()
+            local_alum, local_chlorine = local_control_targets()
+            set_pumps(local_alum, local_chlorine, animate=True)
+            display("LOCAL CTRL")
             display("RECONNECT")
             print("RECONNECT in %dms:" % retry_ms, error)
-            time.sleep_ms(retry_ms)
+            service_visuals(retry_ms)
             retry_ms = min(RECONNECT_MAX_MS, retry_ms * 2)
             continue
     try:
         if not wlan.isconnected():
             raise OSError("WiFi link lost")
         client.check_msg()
+        now = time.ticks_ms()
+        update_pump_motion(now)
         if not injected and time.ticks_diff(time.ticks_ms(), last_local) >= 1500:
             last_local = time.ticks_ms()
-            sequence += 1
-            for name in ADC_PINS:
-                sensors[name] = adc_value(name)
-            if temperature_roms:
-                temperature_bus.convert_temp()
-                time.sleep_ms(750)
-                sensors["temperature"] = temperature_bus.read_temp(temperature_roms[0])
-            sensors["raw_delta"] = 0.0
+            sample_local_sensors()
+            if not cloud_command_received:
+                local_alum, local_chlorine = local_control_targets()
+                set_pumps(local_alum, local_chlorine, restart=False)
             publish_telemetry("wokwi_electrical_sensor_emulator")
             display("LOCAL ADC")
         if time.ticks_diff(time.ticks_ms(), last_status) >= STATUS_INTERVAL_MS:
             client.publish(topic("status"), b"online", retain=True, qos=0)
+            # A status heartbeat alone proves the MQTT session exists, but a
+            # synchronized sensor snapshot also keeps the live data gate fresh
+            # if an individual QoS-0 injection packet is lost by the public
+            # broker route.
+            publish_telemetry("wokwi_heartbeat_snapshot")
+            status_light(700)
             last_status = time.ticks_ms()
-        if time.ticks_diff(time.ticks_ms(), last_heartbeat) >= 650:
-            heartbeat_state = 0 if heartbeat_state else 1
-            online_led.value(heartbeat_state)
+        now = time.ticks_ms()
+        update_pump_motion(now)
+        if time.ticks_diff(now, last_heartbeat) >= 650:
+            if time.ticks_diff(now, status_hold_until) >= 0:
+                heartbeat_state = 0 if heartbeat_state else 1
+                online_led.value(heartbeat_state)
+            else:
+                heartbeat_state = 1
+                online_led.value(1)
             last_heartbeat = time.ticks_ms()
         time.sleep_ms(20)
     except Exception as error:
