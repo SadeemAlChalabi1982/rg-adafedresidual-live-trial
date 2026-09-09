@@ -447,52 +447,66 @@ class PublicFederatedEngine:
             records[station] = row
         fs.STATE.update(summary=records)
 
+    def live_station_status(self, now: float | None = None):
+        """Return fresh Wokwi stations and their most recent contact times."""
+        if now is None:
+            now = time.time()
+        last_contact = {
+            station: max(self.last_seen[station], self.last_status_seen[station])
+            for station in fs.STATIONS
+        }
+        live_stations = [
+            station
+            for station in fs.STATIONS
+            if (
+                self.reported_online[station]
+                and now - last_contact[station] <= LIVE_TIMEOUT_SECONDS
+                and station in self.latest_live
+            )
+        ]
+        return live_stations, last_contact
+
     def run_forever(self):
         self.initialize_state()
         self.connect_mqtt()
         self.train_federated_model()
         cycle = 0
         control_cycle = 0
+        station_cycle = 0
         while True:
             cycle += 1
             self.request_station_rows(cycle)
             time.sleep(min(1.0, CYCLE_SECONDS / 3.0))
             self.drain_live_telemetry()
             now = time.time()
-            last_contact = {
-                station: max(self.last_seen[station], self.last_status_seen[station])
-                for station in fs.STATIONS
-            }
-            live_stations = [
-                station
-                for station in fs.STATIONS
-                if (
-                    self.reported_online[station]
-                    and
-                    now - last_contact[station] <= LIVE_TIMEOUT_SECONDS
-                    and station in self.latest_live
-                )
-            ]
+            live_stations, last_contact = self.live_station_status(now)
             all_live = len(live_stations) == len(fs.STATIONS)
+            any_live = bool(live_stations)
+            if any_live:
+                station_cycle += 1
 
+            aggregation = None
             if all_live:
                 control_cycle += 1
                 self.control_cycle = control_cycle
                 aggregation = self.online_federated_update()
-                for station in fs.STATIONS:
-                    # Display and regulate the exact current row transmitted to
-                    # the Wokwi node.  The returned telemetry is used as the
-                    # online/freshness acknowledgement, not as a frozen cache.
-                    sensors = self.requested_rows.get(
-                        station,
-                        self.latest_live[station]["sensors"],
-                    )
-                    self.infer_and_update(
-                        station,
-                        sensors,
-                        live=True,
-                        source="mqtt_transmitted_station_stream",
-                    )
+
+            # Every fresh Wokwi station is displayed and regulated immediately.
+            # A three-station quorum is required only for a *new federated
+            # aggregation*, not for reading or controlling an already connected
+            # station with the latest validated global model.
+            for station in live_stations:
+                self.infer_and_update(
+                    station,
+                    self.latest_live[station]["sensors"],
+                    live=True,
+                    source=(
+                        "mqtt_federated_station_stream"
+                        if all_live
+                        else "mqtt_independent_station_stream"
+                    ),
+                )
+                if all_live:
                     station_state = fs.STATE.snapshot()["stations"][station]
                     sensors = station_state["sensors"]
                     pumps = station_state["pumps"]
@@ -513,37 +527,33 @@ class PublicFederatedEngine:
                             "weights_hash": aggregation["weights_hash"],
                         }
                     )
+            if all_live:
                 self.update_summary()
-            elif control_cycle > 0:
-                for station in fs.STATIONS:
-                    connected = station in live_stations
-                    age_seconds = (
-                        now - last_contact[station]
-                        if station in self.latest_live
-                        else 0.0
-                    )
-                    self.hold_last_validated_state(station, connected, age_seconds)
-            else:
-                for station in fs.STATIONS:
-                    connected = station in live_stations
-                    self.hold_station_at_zero(station, connected)
-                    if connected:
-                        self.publish(
-                            "command",
-                            station,
-                            {
-                                "global_round": self.cloud.round,
-                                "alum_percent": 0.0,
-                                "chlorine_percent": 0.0,
-                                "mode": "SAFETY_INTERLOCK_WAITING_ALL_STATIONS",
-                            },
-                        )
+
+            snapshot = fs.STATE.snapshot()["stations"]
+            has_validated_state = any(
+                snapshot.get(station, {}).get("sensors") for station in fs.STATIONS
+            )
+            for station in fs.STATIONS:
+                if station in live_stations:
+                    continue
+                age_seconds = (
+                    now - last_contact[station]
+                    if station in self.latest_live
+                    else 0.0
+                )
+                if snapshot.get(station, {}).get("sensors"):
+                    self.hold_last_validated_state(station, False, age_seconds)
+                else:
+                    self.hold_station_at_zero(station, False)
 
             live_mode = (
                 "LIVE MQTT"
                 if all_live
+                else "PARTIAL LIVE MQTT"
+                if any_live
                 else "HOLDING LAST STATE"
-                if control_cycle > 0
+                if has_validated_state
                 else "WAITING FOR STATIONS"
             )
             fs.STATE.update(
@@ -551,20 +561,27 @@ class PublicFederatedEngine:
                 phase=(
                     "Closed-loop MQTT regulation"
                     if all_live
+                    else f"Independent station regulation active — {len(live_stations)}/3 live; federated aggregation waiting"
+                    if any_live
                     else "Connection interrupted — holding last validated state"
-                    if control_cycle > 0
+                    if has_validated_state
                     else f"Safety standby — {len(live_stations)}/3 stations connected"
                 ),
-                live_cycle=control_cycle,
+                live_cycle=station_cycle,
+                federated_live_cycle=control_cycle,
                 federation_version=self.cloud.round,
                 security=self.security_state(
-                    "PAV VERIFIED" if all_live else "PAV HOLDING"
+                    "PAV VERIFIED"
+                    if all_live
+                    else "PAV READY — FEDERATED QUORUM WAITING"
+                    if any_live
+                    else "PAV HOLDING"
                 ),
                 broker={"connected": self.mqtt_connected, "host": MQTT_HOST, "port": MQTT_PORT},
                 deployment={
                     "transport": "PUBLIC MQTT",
                     "live_mode": live_mode,
-                    "accuracy_scope": "Wokwi telemetry drives live inference, PAV-verified local updates, relation-guided aggregation, global broadcast and acknowledged pump commands; temporary link loss holds the last validated state",
+                    "accuracy_scope": "Each fresh Wokwi station immediately drives live inference and acknowledged pump commands with the latest validated global model; a new PAV-verified relation-guided aggregation waits for the three-station quorum; temporary link loss holds that station's last validated state",
                     "hardware": "Wokwi ESP32 sensor/actuator node + Python Raspberry Pi 4B logical client",
                 },
             )
@@ -572,24 +589,42 @@ class PublicFederatedEngine:
                 status=(
                     "Live commands returned to all Wokwi pumps"
                     if all_live
+                    else f"{len(live_stations)}/3 Wokwi stations live — independent inference active; federated aggregation waiting"
+                    if any_live
                     else f"Holding last validated state — {len(live_stations)}/3 links fresh"
-                    if control_cycle > 0
+                    if has_validated_state
                     else f"Safety standby — waiting for {3 - len(live_stations)} station(s)"
                 ),
                 contributors=3 if all_live else len(live_stations),
                 weights_hash=self.cloud.parameters.digest(),
             )
             fs.STATE.event(
-                "live" if all_live else "hold" if control_cycle > 0 else "standby",
+                "live" if all_live else "station" if any_live else "hold" if has_validated_state else "standby",
                 (
                     f"Control cycle {control_cycle}: all three Wokwi stations acknowledged"
                     if all_live
-                    else f"Holding cycle {control_cycle}: {len(live_stations)}/3 links fresh"
-                    if control_cycle > 0
+                    else f"Station cycle {station_cycle}: {len(live_stations)}/3 Wokwi stations regulated; federated quorum pending"
+                    if any_live
+                    else f"Holding cycle {station_cycle}: {len(live_stations)}/3 links fresh"
+                    if has_validated_state
                     else f"Zero-output interlock: {len(live_stations)}/3 stations connected"
                 ),
             )
-            time.sleep(max(0.2, CYCLE_SECONDS - min(1.0, CYCLE_SECONDS / 3.0)))
+            # Preserve the 12-second scientific cycle, but poll for a newly
+            # started Wokwi station.  A new station wakes the next pass within
+            # about 250 ms instead of waiting for the full remaining interval.
+            remaining = max(0.2, CYCLE_SECONDS - min(1.0, CYCLE_SECONDS / 3.0))
+            deadline = time.monotonic() + remaining
+            baseline = set(live_stations)
+            while True:
+                wait_seconds = deadline - time.monotonic()
+                if wait_seconds <= 0:
+                    break
+                time.sleep(min(0.25, wait_seconds))
+                self.drain_live_telemetry()
+                refreshed, _ = self.live_station_status()
+                if set(refreshed) - baseline:
+                    break
 
 
 def serve():
