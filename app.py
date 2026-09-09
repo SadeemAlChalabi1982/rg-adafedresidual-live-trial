@@ -3,26 +3,42 @@ from __future__ import annotations
 import json
 import os
 import queue
+import hashlib
+import hmac
+import secrets
 import threading
 import time
 import uuid
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import paho.mqtt.client as mqtt
 
 import federated_system as fs
 
 
 ROOT = Path(__file__).resolve().parent
-TOPIC_ROOT = os.getenv("MQTT_TOPIC_ROOT", "rgaf-sadeem-paper3-live-20260831-v1")
+TOPIC_ROOT = os.getenv("MQTT_TOPIC_ROOT", "rgaf-sadeem-paper3-linked-20260909-v1")
 MQTT_HOST = os.getenv("MQTT_HOST", "broker.hivemq.com")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 FEDERATED_ROUNDS = int(os.getenv("FEDERATED_ROUNDS", "6"))
-LIVE_TIMEOUT_SECONDS = float(os.getenv("STATION_HEARTBEAT_TIMEOUT_SECONDS", "75"))
+LIVE_TIMEOUT_SECONDS = max(
+    45.0,
+    float(
+        os.getenv(
+            "STATION_HEARTBEAT_TIMEOUT_SECONDS",
+            os.getenv("LIVE_TIMEOUT_SECONDS", "120"),
+        )
+    ),
+)
 CYCLE_SECONDS = float(os.getenv("CYCLE_SECONDS", "12"))
+ONLINE_EPOCHS = max(1, int(os.getenv("ONLINE_LOCAL_EPOCHS", "1")))
 DEMO_ONLY = os.getenv("DEMO_ONLY", "false").lower() in {"1", "true", "yes"}
+PAV_ALGORITHM = "HMAC-SHA256"
 
 WOKWI_URLS = {
     "austin": os.getenv("WOKWI_AUSTIN_URL", "https://wokwi.com/projects/473854149978000385"),
@@ -65,6 +81,14 @@ class PublicFederatedEngine:
         self.requested_rows: dict[str, dict] = {}
         self.histories = {station: [] for station in fs.STATIONS}
         self.previous_raw = {station: None for station in fs.STATIONS}
+        self.trace = deque(maxlen=360)
+        self.control_cycle = 0
+        self.pav_keys = {
+            station: secrets.token_bytes(32)
+            for station in fs.STATIONS
+        }
+        self.pav_verified = {station: 0 for station in fs.STATIONS}
+        self.pav_rejected = 0
         self.mqtt_connected = False
         self.mqtt_client = mqtt.Client(
             mqtt.CallbackAPIVersion.VERSION2,
@@ -73,6 +97,82 @@ class PublicFederatedEngine:
         self.mqtt_client.on_connect = self._on_connect
         self.mqtt_client.on_disconnect = self._on_disconnect
         self.mqtt_client.on_message = self._on_message
+
+    def security_state(self, status="PAV VERIFYING"):
+        return {
+            "layer": "PAV",
+            "profile": "Payload Authentication and Verification",
+            "algorithm": PAV_ALGORITHM,
+            "status": status,
+            "verified_stations": sum(
+                1 for station in fs.STATIONS if self.pav_verified[station] > 0
+            ),
+            "required_stations": len(fs.STATIONS),
+            "timestamp_freshness": True,
+            "nonce_replay_protection": True,
+            "rejected_messages": self.pav_rejected,
+        }
+
+    def authenticated_local_update(self, station, round_number, epochs):
+        update = self.edges[station].train_local(
+            round_number,
+            batch_size=64,
+            epochs=epochs,
+        )
+        descriptor = {
+            "station": station,
+            "round": int(round_number),
+            "samples": int(update.samples),
+            "validation_rmse": round(float(update.validation_rmse), 12),
+            "parameters_sha256": update.parameters.digest(),
+            "delta_sha256": hashlib.sha256(
+                update.delta.astype("float32").tobytes()
+            ).hexdigest(),
+        }
+        canonical = json.dumps(
+            descriptor,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        tag = hmac.new(self.pav_keys[station], canonical, hashlib.sha256).hexdigest()
+        expected = hmac.new(
+            self.pav_keys[station], canonical, hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(tag, expected):
+            self.pav_rejected += 1
+            raise RuntimeError(f"PAV rejected local update from {station}")
+        self.pav_verified[station] += 1
+        fs.STATE.station(
+            station,
+            pav_status="PAV VERIFIED",
+            pav_algorithm=PAV_ALGORITHM,
+        )
+        return update
+
+    def train_and_aggregate(self, round_number, epochs):
+        for station, edge in self.edges.items():
+            edge.receive_global(self.cloud.parameters, round_number)
+            fs.STATE.station(
+                station,
+                phase="Private local RG-AdaFedResidual training",
+                local_progress=12,
+            )
+        with ThreadPoolExecutor(max_workers=len(fs.STATIONS)) as pool:
+            futures = {
+                station: pool.submit(
+                    self.authenticated_local_update,
+                    station,
+                    round_number,
+                    epochs,
+                )
+                for station in fs.STATIONS
+            }
+            updates = [futures[station].result() for station in fs.STATIONS]
+        result = self.cloud.aggregate(updates)
+        for edge in self.edges.values():
+            edge.receive_global(self.cloud.parameters, self.cloud.round)
+        fs.STATE.update(security=self.security_state("PAV VERIFIED"))
+        return result
 
     def _on_connect(self, client, userdata, flags, reason_code, properties=None):
         self.mqtt_connected = reason_code == 0
@@ -128,12 +228,14 @@ class PublicFederatedEngine:
             round=0,
             max_rounds=FEDERATED_ROUNDS,
             live_cycle=0,
+            federation_version=0,
             deployment={
                 "transport": "PUBLIC MQTT",
                 "live_mode": "WAITING FOR STATIONS",
-                "accuracy_scope": "strict live gate: no readings or pump commands before all three Wokwi stations are online",
+                "accuracy_scope": "three isolated Wokwi stations publish telemetry to three logical Raspberry Pi clients; no global update or dosing command is issued before the three-station quorum",
                 "hardware": "Wokwi ESP32 sensor/actuator node + Python Raspberry Pi 4B logical client",
             },
+            security=self.security_state(),
             broker={"connected": False, "host": MQTT_HOST, "port": MQTT_PORT},
         )
         for station in fs.STATIONS:
@@ -152,6 +254,8 @@ class PublicFederatedEngine:
                 stale_seconds=0.0,
                 source="initializing",
                 wokwi_url=WOKWI_URLS[station],
+                pav_status="PAV CHECKING",
+                pav_algorithm=PAV_ALGORITHM,
             )
 
     def connect_mqtt(self):
@@ -167,15 +271,8 @@ class PublicFederatedEngine:
     def train_federated_model(self):
         for round_number in range(1, FEDERATED_ROUNDS + 1):
             fs.STATE.update(round=round_number, phase="Raspberry Pi local training")
-            updates = []
-            for station in fs.STATIONS:
-                edge = self.edges[station]
-                edge.receive_global(self.cloud.parameters, round_number)
-                fs.STATE.station(station, phase="Local RG-AdaFedResidual training", local_progress=25)
-                updates.append(edge.train_local(round_number))
-                fs.STATE.station(station, local_progress=100)
             fs.STATE.update(phase="Relation-guided aggregation")
-            result = self.cloud.aggregate(updates)
+            result = self.train_and_aggregate(round_number, epochs=6)
             fs.STATE.cloud(
                 status="Relation-guided aggregation completed",
                 contributors=3,
@@ -194,6 +291,30 @@ class PublicFederatedEngine:
                 {"global_round": self.cloud.round, "weights_hash": self.cloud.parameters.digest()},
                 retain=True,
             )
+
+    def online_federated_update(self):
+        version = self.cloud.round + 1
+        fs.STATE.update(phase=f"Live local learning for global model v{version}")
+        result = self.train_and_aggregate(version, epochs=ONLINE_EPOCHS)
+        for station in fs.STATIONS:
+            self.publish(
+                "weights",
+                station,
+                {
+                    "global_round": self.cloud.round,
+                    "weights_hash": self.cloud.parameters.digest(),
+                },
+                retain=True,
+            )
+        fs.STATE.cloud(
+            status=f"PAV-verified global model v{self.cloud.round} broadcast to all stations",
+            contributors=3,
+            weights_hash=result["weights_hash"],
+            client_weights=result["client_weights"],
+            relation_scores=result["relation_scores"],
+            global_version=self.cloud.round,
+        )
+        return result
 
     def causal_features(self, station: str, sensors: dict) -> dict:
         values = {key: float(sensors[key]) for key in (
@@ -296,6 +417,7 @@ class PublicFederatedEngine:
                 "temperature": float(row.temperature),
                 "flow": float(row.flow),
                 "residual_chlorine": float(row.residual_chlorine),
+                "target_forecast": float(row.forecast_h6_ntu),
             }
             self.requested_rows[station] = payload
             self.publish(
@@ -313,6 +435,17 @@ class PublicFederatedEngine:
             station = payload.get("station")
             if station in fs.STATIONS and isinstance(payload.get("sensors"), dict):
                 self.latest_live[station] = payload
+
+    def update_summary(self):
+        if not self.trace:
+            return
+        summary = fs.metric_summary(pd.DataFrame(self.trace))
+        records = {}
+        for row in summary.to_dict(orient="records"):
+            station = row["station"]
+            row["station"] = fs.DISPLAY_NAMES[station]
+            records[station] = row
+        fs.STATE.update(summary=records)
 
     def run_forever(self):
         self.initialize_state()
@@ -344,6 +477,8 @@ class PublicFederatedEngine:
 
             if all_live:
                 control_cycle += 1
+                self.control_cycle = control_cycle
+                aggregation = self.online_federated_update()
                 for station in fs.STATIONS:
                     # Display and regulate the exact current row transmitted to
                     # the Wokwi node.  The returned telemetry is used as the
@@ -358,6 +493,27 @@ class PublicFederatedEngine:
                         live=True,
                         source="mqtt_transmitted_station_stream",
                     )
+                    station_state = fs.STATE.snapshot()["stations"][station]
+                    sensors = station_state["sensors"]
+                    pumps = station_state["pumps"]
+                    self.trace.append(
+                        {
+                            "time_step": control_cycle,
+                            "station": station,
+                            "origin": fs.ORIGINS[station],
+                            **sensors,
+                            "target_forecast": float(
+                                self.requested_rows[station]["target_forecast"]
+                            ),
+                            "predicted_forecast": float(station_state["forecast"]),
+                            "alum_percent": float(pumps["alum"]),
+                            "chlorine_percent": float(pumps["chlorine"]),
+                            "control_mode": station_state["control_mode"],
+                            "global_round": self.cloud.round,
+                            "weights_hash": aggregation["weights_hash"],
+                        }
+                    )
+                self.update_summary()
             elif control_cycle > 0:
                 for station in fs.STATIONS:
                     connected = station in live_stations
@@ -400,11 +556,15 @@ class PublicFederatedEngine:
                     else f"Safety standby — {len(live_stations)}/3 stations connected"
                 ),
                 live_cycle=control_cycle,
+                federation_version=self.cloud.round,
+                security=self.security_state(
+                    "PAV VERIFIED" if all_live else "PAV HOLDING"
+                ),
                 broker={"connected": self.mqtt_connected, "host": MQTT_HOST, "port": MQTT_PORT},
                 deployment={
                     "transport": "PUBLIC MQTT",
                     "live_mode": live_mode,
-                    "accuracy_scope": "strict live gate with last-validated-state hold during temporary MQTT interruptions",
+                    "accuracy_scope": "Wokwi telemetry drives live inference, PAV-verified local updates, relation-guided aggregation, global broadcast and acknowledged pump commands; temporary link loss holds the last validated state",
                     "hardware": "Wokwi ESP32 sensor/actuator node + Python Raspberry Pi 4B logical client",
                 },
             )

@@ -1,10 +1,10 @@
 services:
   - type: web
-    name: rg-adafedresidual-cloud-laboratory
+    name: rg-adafedresidual-wokwi-linked
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python cloud_app.py
+    startCommand: python app.py
     healthCheckPath: /api/state
     envVars:
       - key: PYTHON_VERSION
@@ -14,7 +14,15 @@ services:
       - key: CYCLE_SECONDS
         value: "12"
       - key: ONLINE_LOCAL_EPOCHS
-        value: "2"
+        value: "1"
+      - key: MQTT_HOST
+        value: broker.hivemq.com
+      - key: MQTT_PORT
+        value: "1883"
+      - key: MQTT_TOPIC_ROOT
+        value: rgaf-sadeem-paper3-linked-20260909-v1
+      - key: STATION_HEARTBEAT_TIMEOUT_SECONDS
+        value: "120"
       - key: WOKWI_AUSTIN_URL
         value: https://wokwi.com/projects/473854149978000385
       - key: WOKWI_TONGJI_URL

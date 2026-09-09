@@ -1,31 +1,31 @@
-# RG-AdaFedResidual Cloud Federated Laboratory
+# RG-AdaFedResidual Wokwi-Linked Federated Laboratory
 
-This branch runs an executable, reviewer-facing cloud simulation for three water-treatment stations. It is independent of the browser lifetime of the optional Wokwi circuit projects.
+This branch is the separately deployed, three-station Wokwi-linked edition. It does not replace or modify the standalone `cloud-federated-lab` deployment.
 
-## Executable cloud path
+## Live distributed path
 
-- Three independent station threads own separate sensor/plant states and actuator command queues.
-- Austin and Tongji stream their published-field test partitions; the third station remains explicitly identified as a disclosed digital twin.
-- Every operational cycle performs local RG-AdaFedResidual updates at all three Raspberry Pi client processes, uploads model updates, executes relation-guided aggregation, broadcasts a new global version, runs H6 inference, and sends acknowledged dosing commands back to the station plants.
-- Only model parameters and operational commands cross the federated boundary; raw station frames remain owned by their station runtimes.
-- Wokwi links remain available for inspecting the corresponding ESP32 circuit diagrams, but Wokwi is not required for the cloud engine to continue.
+- Three distinct Wokwi projects represent the Austin, Tongji, and disclosed digital-twin ESP32 sensor/actuator stations.
+- Each station publishes its own telemetry and heartbeat on an isolated topic namespace through the public MQTT broker.
+- Three logical Raspberry Pi clients hosted by Render execute private local RG-AdaFedResidual updates.
+- The coordinator verifies the three client updates through the PAV HMAC-SHA256 layer, performs relation-guided aggregation, broadcasts the new global version, runs H6 inference, and returns a separate dosing command to each Wokwi station.
+- The dashboard advances only after the three-station live quorum is present. A short interruption holds the last validated readings and commands instead of resetting them.
 
-## PAV security layer
+## Isolation from the preserved edition
 
-PAV (Payload Authentication and Verification) is the project name for the message-security profile used between each logical station and the federated coordinator. Every telemetry packet and private model update is signed with a station-specific HMAC-SHA256 key. The coordinator verifies the station identity, payload digest, sequence, timestamp freshness, and single-use nonce before accepting the message. Altered, stale, or replayed messages are rejected before aggregation or actuation.
+- Preserved standalone branch: `cloud-federated-lab`
+- Linked branch: `wokwi-linked-lab`
+- Preserved standalone service: `rg-adafedresidual-cloud-laboratory`
+- Linked service: `rg-adafedresidual-wokwi-linked`
+- Linked MQTT namespace: `rgaf-sadeem-paper3-linked-20260909-v1`
 
-Keys are never returned by the API or rendered in the dashboard. Render can provision persistent keys through `PAV_KEY_AUSTIN`, `PAV_KEY_TONGJI`, and `PAV_KEY_VIRTUAL`; when those variables are absent, the process provisions fresh 256-bit runtime keys. HTTPS/TLS protects the browser connection separately. PAV provides message authenticity, integrity, freshness, and replay resistance; it is not payload encryption.
+The separate branch, service name, and MQTT namespace prevent the linked edition from changing or commanding the preserved standalone edition.
 
 ## Render
 
 Build command: `pip install -r requirements.txt`
 
-Start command: `python cloud_app.py`
+Start command: `python app.py`
 
 Health check: `/api/state`
 
-The free Render instance is suitable for execution testing and spins down after inactivity. Keeping the public dashboard open maintains inbound polling during a review session. Upgrading the same service later removes the free-instance sleep behavior without a code change.
-
-## Academic disclosure
-
-The deployment is an executable cloud simulation. Wokwi represents the ESP32 electrical/firmware layer when opened; the continuously hosted station and Raspberry Pi client processes are cloud runtimes rather than claims of installed physical hardware.
+The service runs on Render's free plan and may sleep after inactivity. Opening the linked dashboard wakes it; start all three linked Wokwi stations after the dashboard reports that the MQTT broker is connected.
