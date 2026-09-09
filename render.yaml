@@ -24,8 +24,8 @@ services:
       - key: STATION_HEARTBEAT_TIMEOUT_SECONDS
         value: "120"
       - key: WOKWI_AUSTIN_URL
-        value: https://wokwi.com/projects/473854149978000385
+        value: https://wokwi.com/projects/474707915927449601
       - key: WOKWI_TONGJI_URL
-        value: https://wokwi.com/projects/473855638857098241
+        value: https://wokwi.com/projects/474708305707343873
       - key: WOKWI_VIRTUAL_URL
-        value: https://wokwi.com/projects/473855699260353537
+        value: https://wokwi.com/projects/474708525672428545

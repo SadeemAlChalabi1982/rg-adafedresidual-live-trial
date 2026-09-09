@@ -41,9 +41,9 @@ DEMO_ONLY = os.getenv("DEMO_ONLY", "false").lower() in {"1", "true", "yes"}
 PAV_ALGORITHM = "HMAC-SHA256"
 
 WOKWI_URLS = {
-    "austin": os.getenv("WOKWI_AUSTIN_URL", "https://wokwi.com/projects/473854149978000385"),
-    "tongji": os.getenv("WOKWI_TONGJI_URL", "https://wokwi.com/projects/473855638857098241"),
-    "virtual": os.getenv("WOKWI_VIRTUAL_URL", "https://wokwi.com/projects/473855699260353537"),
+    "austin": os.getenv("WOKWI_AUSTIN_URL", "https://wokwi.com/projects/474707915927449601"),
+    "tongji": os.getenv("WOKWI_TONGJI_URL", "https://wokwi.com/projects/474708305707343873"),
+    "virtual": os.getenv("WOKWI_VIRTUAL_URL", "https://wokwi.com/projects/474708525672428545"),
 }
 
 
