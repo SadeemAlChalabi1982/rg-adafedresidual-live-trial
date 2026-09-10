@@ -22,7 +22,7 @@ services:
       - key: MQTT_TOPIC_ROOT
         value: rgaf-sadeem-paper3-linked-20260909-v1
       - key: STATION_HEARTBEAT_TIMEOUT_SECONDS
-        value: "30"
+        value: "180"
       - key: QUORUM_STABLE_SECONDS
         value: "1"
       - key: QUORUM_LOSS_GRACE_SECONDS
