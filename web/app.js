@@ -114,7 +114,7 @@ function updateStationStatus(id, station) {
   if (!card) return;
   const connectionState = station.connection_state || (station.online ? 'LIVE' : 'OFFLINE');
   card.classList.toggle('active', connectionState === 'LIVE');
-  card.classList.toggle('holding', connectionState === 'HOLDING' || connectionState === 'READY');
+  card.classList.toggle('holding', ['HOLDING', 'READY', 'RECOVERING'].includes(connectionState));
   document.querySelector(`#${id}-online`).textContent = connectionState;
   document.querySelector(`#${id}-name`).textContent = station.name || id;
   document.querySelector(`#${id}-origin`).textContent = station.origin || '—';
@@ -215,9 +215,12 @@ function enterHoldState(state) {
   document.querySelectorAll('.lane-ball').forEach(ball => ball.classList.remove('go'));
   const architecture = document.querySelector('#architecture');
   document.querySelector('#pavLayer').classList.remove('active');
-  architecture.dataset.stage = 'hold';
+  const mode = state.deployment?.live_mode || 'HOLDING LAST STATE';
+  const recovering = mode === 'LINK RECOVERY';
+  const synchronizing = mode === 'SYNCHRONIZING STATIONS';
+  architecture.dataset.stage = recovering ? 'recovery' : synchronizing ? 'sync' : 'hold';
   architecture.style.setProperty('--stage-color', '#f3a21c');
-  document.querySelector('#visualStage').textContent = 'Holding last validated state';
+  document.querySelector('#visualStage').textContent = state.phase || 'Holding last validated state';
   document.querySelector('#cycle').textContent = activeCycle;
   document.querySelector('#cloudStatus').textContent = state.cloud?.status || 'Holding last validated state';
   document.querySelector('#hash').textContent = state.cloud?.weights_hash || '—';
@@ -243,79 +246,17 @@ function enterHoldState(state) {
     });
     updateTreatmentOutcome(id, station);
     const age = Number(station.stale_seconds || 0);
-    document.querySelector(`#${id}-mode`).textContent = station.connection_state === 'HOLDING'
+    const remaining = Math.ceil(Number(state.deployment?.grace_remaining_seconds || 0));
+    document.querySelector(`#${id}-mode`).textContent = recovering
+      ? station.connection_state === 'RECOVERING'
+        ? `Confirming link interruption · ${remaining} s`
+        : `Unified cycle paused · ${state.deployment?.connected_stations || 0}/3 connected`
+      : synchronizing
+      ? 'Three links detected · synchronizing start'
+      : station.connection_state === 'HOLDING'
       ? `Holding last validated command · ${Math.round(age)} s`
       : 'Link ready · waiting for full station quorum';
   });
-}
-
-function enterPartialLiveState(state, animate = false) {
-  clearTimeout(stageTimer);
-  clearStageTimers();
-  cycleToken += 1;
-  cycleRunning = false;
-  queuedState = null;
-  currentCycleState = state;
-  activeCycle = Number(state.live_cycle || activeCycle || 0);
-  standbyApplied = false;
-  const activeIds = order.filter(id => state.stations?.[id]?.connection_state === 'LIVE');
-  const architecture = document.querySelector('#architecture');
-  architecture.dataset.stage = 'sensor';
-  architecture.style.setProperty('--stage-color', '#1787ff');
-  document.querySelector('#visualStage').textContent = `Live Wokwi station regulation — ${activeIds.length}/3 active; federated quorum waiting`;
-  document.querySelector('#cycle').textContent = activeCycle;
-  document.querySelector('#cloudStatus').textContent = state.cloud?.status || 'Federated aggregation waiting';
-  document.querySelector('#hash').textContent = state.cloud?.weights_hash || '—';
-  document.querySelector('#pavLayer').classList.remove('active');
-  document.querySelectorAll('.step').forEach(element => {
-    element.classList.toggle('active', ['sensor', 'edge', 'actuate'].includes(element.dataset.key));
-  });
-  document.querySelector('#motionToggle').disabled = false;
-  document.querySelector('#replay').disabled = false;
-
-  order.forEach(id => {
-    const station = state.stations?.[id] || {};
-    Object.keys(sensorDefs).forEach(key => {
-      const value = station.sensors?.[key];
-      const element = document.querySelector(`#${id}-${key}`);
-      if (value != null) setChangingText(element, fmt(value, key));
-      else element.textContent = '—';
-    });
-    updateStationProcess(id, station);
-    ['alum', 'chlorine'].forEach(key => {
-      const value = Number(station.pumps?.[key] || 0);
-      const pump = document.querySelector(`#${id}-pump-${key}`);
-      pump.style.setProperty('--power', Math.max(0, value / 100));
-      pump.classList.toggle('high', value >= 90);
-      pump.classList.toggle('received', activeIds.includes(id));
-      setChangingText(document.querySelector(`#${id}-${key}`), `${value.toFixed(1)}%`);
-      setChangingText(document.querySelector(`#${id}-dose-${key}`), `${value.toFixed(1)}%`);
-    });
-    updateTreatmentOutcome(id, station);
-    if (activeIds.includes(id)) commitControlResult(id, station);
-    else {
-      const age = Number(station.stale_seconds || 0);
-      document.querySelector(`#${id}-mode`).textContent = station.connection_state === 'HOLDING'
-        ? `Holding last validated command · ${Math.round(age)} s`
-        : 'Waiting for Wokwi telemetry';
-    }
-  });
-
-  if (!animate || motionPaused) return;
-  activeIds.forEach(id => {
-    Object.keys(sensorDefs).forEach((key, index) => showSvgMotion(`sensorMotion-${id}-${index}`, index * 70, 1000));
-    restartLane(`#station-${id} .lane-ball.edge`, 650);
-    showSvgMotion(`commandMotion-${id}-0`, 1250, 1450);
-    showSvgMotion(`commandMotion-${id}-1`, 1400, 1550);
-  });
-  const actuation = setTimeout(() => {
-    if (motionPaused) return;
-    architecture.dataset.stage = 'actuate';
-    architecture.style.setProperty('--stage-color', '#ed4658');
-    document.querySelector('#visualStage').textContent = `Applying live commands to ${activeIds.length} connected Wokwi station${activeIds.length === 1 ? '' : 's'}`;
-    document.querySelectorAll('.step').forEach(element => element.classList.toggle('active', element.dataset.key === 'actuate'));
-  }, 1200);
-  stageTimers.push(actuation);
 }
 
 function commitSensor(id, station, key) {
@@ -514,8 +455,7 @@ document.querySelector('#motionToggle').addEventListener('click', event => {
     cycleRunning = false;
   } else {
     const state = queuedState || latestState || currentCycleState;
-    if (state?.deployment?.live_mode === 'PARTIAL LIVE MQTT') enterPartialLiveState(state, true);
-    else startCycle(state, true);
+    if (state?.deployment?.live_mode === 'LIVE MQTT') startCycle(state, true);
   }
 });
 
@@ -524,8 +464,7 @@ document.querySelector('#replay').addEventListener('click', () => {
   document.body.classList.remove('motion-paused');
   document.querySelector('#motionToggle').textContent = 'Pause motion';
   const state = latestState || currentCycleState;
-  if (state?.deployment?.live_mode === 'PARTIAL LIVE MQTT') enterPartialLiveState(state, true);
-  else startCycle(state, true);
+  if (state?.deployment?.live_mode === 'LIVE MQTT') startCycle(state, true);
 });
 
 function renderSummary(summary) {
@@ -540,12 +479,13 @@ async function refresh() {
     const state = await response.json();
     const mode = state.deployment?.live_mode || 'INITIALIZING';
     const isCloud = mode === 'CLOUD FEDERATED LIVE';
-    const isPartial = mode === 'PARTIAL LIVE MQTT';
     const isLive = mode === 'LIVE MQTT' || isCloud;
     const isHolding = mode === 'HOLDING LAST STATE';
+    const isRecovering = mode === 'LINK RECOVERY';
+    const isSynchronizing = mode === 'SYNCHRONIZING STATIONS';
     const dot = document.querySelector('#liveDot');
-    dot.classList.toggle('on', isLive || isPartial);
-    dot.classList.toggle('fallback', !isLive && !isPartial && state.running);
+    dot.classList.toggle('on', isLive);
+    dot.classList.toggle('fallback', !isLive && state.running);
     document.querySelector('#runState').textContent = mode;
     const transport = state.deployment?.transport || 'PUBLIC MQTT';
     const transportDetail = state.broker?.connected
@@ -559,14 +499,12 @@ async function refresh() {
     updateSecurity(state);
     latestState = state;
     const nextCycle = Number(state.live_cycle || 0);
-    if (isPartial && nextCycle > 0 && nextCycle !== activeCycle) {
-      enterPartialLiveState(state, true);
-    } else if (isLive && nextCycle > 0 && nextCycle !== activeCycle) {
+    if (isLive && nextCycle > 0 && nextCycle !== activeCycle) {
       // A newly published backend cycle is authoritative.  Interrupting an
       // older visual cycle prevents a page opened mid-cycle from remaining
       // one sample behind the MQTT/model execution indefinitely.
       startCycle(state, true);
-    } else if (isHolding && nextCycle > 0) {
+    } else if ((isHolding || isRecovering || isSynchronizing) && nextCycle > 0) {
       enterHoldState(state);
     } else if (!isLive || nextCycle === 0) {
       enterStrictStandby(state);
@@ -576,11 +514,13 @@ async function refresh() {
       ? `The displayed figures are the current samples emitted by three independent cloud station runtimes. Each cycle performs three private local updates, relation-guided aggregation to global model v${state.federation_version || '—'}, H6 inference and acknowledged actuator commands.`
       : isLive
       ? 'The displayed figures are the exact current MQTT samples transmitted to the three acknowledged Wokwi nodes.'
-      : isPartial
-      ? 'Every connected Wokwi station updates immediately and receives a pump command from the latest validated global model; only the next federated aggregation waits for all three stations.'
+      : isRecovering
+      ? `All visual motion and new commands are paused during the ${state.deployment?.disconnect_grace_seconds || 15}-second link-verification window; a quick reconnection resumes the same validated cycle.`
+      : isSynchronizing
+      ? 'All three links are present and the unified cycle is aligning before synchronized execution begins.'
       : isHolding
-      ? 'The last validated readings and commands are frozen during the temporary interruption; no new command is generated until all three links recover.'
-      : 'No operational readings or pump commands are issued until all three Wokwi stations acknowledge current telemetry.';
+      ? 'The last validated readings and commands are frozen; no new cycle is generated until all three station links recover together.'
+      : 'No operational readings or pump commands are issued until all three Wokwi stations acknowledge current telemetry together.';
     document.querySelector('#deploymentDisclosure').textContent = `Execution mode: ${mode}. ${state.deployment?.accuracy_scope || '—'}. Transport: ${transport}. ${sampleDetail} Austin and Tongji use published-field streams; Virtual is explicitly disclosed as a digital twin.`;
     renderSummary(state.summary || {});
   } catch (error) {
