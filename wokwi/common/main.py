@@ -13,9 +13,9 @@ MQTT_HOST = "broker.hivemq.com"  # Public trial broker; contains no private meas
 MQTT_PORT = 1883
 WIFI_SSID = "Wokwi-GUEST"
 WIFI_PASSWORD = ""
-RECONNECT_MIN_MS = 1000
-RECONNECT_MAX_MS = 15000
-STATUS_INTERVAL_MS = 10000
+RECONNECT_MIN_MS = 100
+RECONNECT_MAX_MS = 800
+STATUS_INTERVAL_MS = 500
 ADC_PINS = {
     "raw_turbidity": 34,
     "filtered_turbidity": 35,
@@ -83,9 +83,15 @@ def sample_local_sensors():
     for name in ADC_PINS:
         sensors[name] = adc_value(name)
     if temperature_roms:
+        # DS18B20 conversion is asynchronous. Read the completed conversion,
+        # then start the next one without blocking MQTT for 750 simulated ms.
+        try:
+            measured_temperature = temperature_bus.read_temp(temperature_roms[0])
+            if -20.0 <= measured_temperature <= 85.0:
+                sensors["temperature"] = measured_temperature
+        except Exception:
+            pass
         temperature_bus.convert_temp()
-        service_visuals(750)
-        sensors["temperature"] = temperature_bus.read_temp(temperature_roms[0])
     sensors["raw_delta"] = max(
         0.0, sensors["raw_turbidity"] - sensors["filtered_turbidity"]
     )
@@ -134,6 +140,10 @@ def update_pump_lights(now=None):
         alum_led.value(0)
     if time.ticks_diff(now, chlorine_light_until) >= 0:
         chlorine_led.value(0)
+    if time.ticks_diff(now, cloud_uplink_until) >= 0:
+        cloud_uplink_signal.value(0)
+    if time.ticks_diff(now, cloud_downlink_until) >= 0:
+        cloud_downlink_signal.value(0)
     alarm_led.value(max(alum_percent, chlorine_percent) >= 90)
 
 
@@ -197,6 +207,7 @@ def display(mode):
 
 
 def publish_telemetry(source):
+    global cloud_uplink_until
     payload = {
         "station": station,
         "sequence": sequence,
@@ -208,16 +219,14 @@ def publish_telemetry(source):
         "uptime_ms": time.ticks_ms(),
     }
     cloud_uplink_signal.value(1)
-    try:
-        client.publish(topic("telemetry"), json.dumps(payload).encode(), qos=0)
-        status_light(900)
-        service_visuals(900)
-    finally:
-        cloud_uplink_signal.value(0)
+    cloud_uplink_until = time.ticks_add(time.ticks_ms(), 900)
+    client.publish(topic("telemetry"), json.dumps(payload).encode(), qos=0)
+    status_light(900)
 
 
 def on_message(received, body):
     global sequence, global_round, injected, cloud_command_received
+    global cloud_downlink_until
     try:
         doc = json.loads(body.decode())
         if received == topic("inject"):
@@ -235,46 +244,37 @@ def on_message(received, body):
             requested_chlorine = float(doc.get("chlorine_percent", 0))
             command_mode = str(doc.get("mode", ""))
             cloud_downlink_signal.value(1)
-            try:
-                # The legacy public MQTT service publishes a zero-output
-                # safety interlock whenever fewer than three Wokwi tabs are
-                # open.  This station diagram is also designed to operate as
-                # an independent visual plant, so that waiting command must
-                # not erase the last valid/local dosing command and freeze
-                # both pump shafts.  Genuine model commands, including any
-                # intentional non-interlock zero command, still take effect.
-                waiting_interlock = (
-                    requested_alum <= 0.0
-                    and requested_chlorine <= 0.0
-                    and "SAFETY_INTERLOCK_WAITING" in command_mode
+            cloud_downlink_until = time.ticks_add(time.ticks_ms(), 1000)
+            # The legacy public MQTT service publishes a zero-output safety
+            # interlock whenever fewer than three Wokwi tabs are open. This
+            # station also operates as an independent visual plant, so that
+            # waiting command must not erase its last valid/local command.
+            waiting_interlock = (
+                requested_alum <= 0.0
+                and requested_chlorine <= 0.0
+                and "SAFETY_INTERLOCK_WAITING" in command_mode
+            )
+            if waiting_interlock:
+                cloud_command_received = False
+                local_alum, local_chlorine = local_control_targets()
+                set_pumps(local_alum, local_chlorine, restart=False)
+                display("LOCAL HOLD")
+            else:
+                cloud_command_received = True
+                set_pumps(
+                    requested_alum,
+                    requested_chlorine,
+                    animate=True,
                 )
-                if waiting_interlock:
-                    cloud_command_received = False
-                    local_alum, local_chlorine = local_control_targets()
-                    set_pumps(local_alum, local_chlorine, restart=False)
-                    display("LOCAL HOLD")
-                else:
-                    cloud_command_received = True
-                    set_pumps(
-                        requested_alum,
-                        requested_chlorine,
-                        animate=True,
-                    )
-                    display("REGULATE")
-                status_light(1000)
-                service_visuals(1000)
-            finally:
-                cloud_downlink_signal.value(0)
+                display("REGULATE")
+            status_light(1000)
             print("PUMPS A=%.1f%% C=%.1f%%" % (alum_percent, chlorine_percent))
         elif received == topic("weights"):
             global_round = int(doc.get("global_round", global_round))
             cloud_downlink_signal.value(1)
-            try:
-                status_light(1500)
-                display("WEIGHTS RX")
-                service_visuals(1000)
-            finally:
-                cloud_downlink_signal.value(0)
+            cloud_downlink_until = time.ticks_add(time.ticks_ms(), 1000)
+            status_light(1500)
+            display("WEIGHTS RX")
             print("GLOBAL MODEL", doc.get("weights_hash", "—"), "ROUND", global_round)
     except Exception as error:
         print("MQTT payload error", error)
@@ -296,7 +296,7 @@ def connect_wifi():
     while not wlan.isconnected():
         if time.ticks_diff(time.ticks_ms(), started) >= 12000:
             raise OSError("WiFi connection timeout")
-        service_visuals(150)
+        service_visuals(20)
     print("WIFI connected", wlan.ifconfig()[0])
 
 
@@ -339,6 +339,12 @@ def drop_mqtt():
 
 station = station_id()
 print("BOOT RG-AdaFedResidual station", station)
+# Begin Wi-Fi negotiation before LCD, sensor and lamp initialization.  Wokwi
+# can run several rich circuit tabs at a reduced simulation rate; starting the
+# radio first lets that unavoidable visual setup time overlap network startup.
+wlan = network.WLAN(network.STA_IF)
+wlan.active(True)
+wlan.connect(WIFI_SSID, WIFI_PASSWORD)
 adcs = {name: ADC(Pin(pin)) for name, pin in ADC_PINS.items()}
 for adc in adcs.values():
     try:
@@ -354,6 +360,8 @@ online_led, alum_led = Pin(2, Pin.OUT), Pin(27, Pin.OUT)
 chlorine_led, alarm_led = Pin(14, Pin.OUT), Pin(13, Pin.OUT)
 cloud_uplink_signal = Pin(16, Pin.OUT)
 cloud_downlink_signal = Pin(17, Pin.OUT)
+cloud_uplink_until = 0
+cloud_downlink_until = 0
 lcd = LCD2004(I2C(0, scl=Pin(22), sda=Pin(21), freq=400000))
 sequence = global_round = 0
 alum_percent = chlorine_percent = 0.0
@@ -365,14 +373,13 @@ chlorine_light_until = 0
 pump_cycle_started = time.ticks_ms()
 last_pump_frame = time.ticks_add(pump_cycle_started, -100)
 
-wlan = network.WLAN(network.STA_IF)
 client = None
 set_pumps(0, 0)
 
-# Visible one-second lamp test confirms all four LED channels and wiring.
+# Brief startup lamp test; cloud and pump indications remain non-blocking.
 for led in (online_led, alum_led, chlorine_led, alarm_led):
     led.value(1)
-time.sleep_ms(1000)
+service_visuals(100)
 for led in (online_led, alum_led, chlorine_led, alarm_led):
     led.value(0)
 
