@@ -4,6 +4,7 @@ import argparse
 import copy
 import csv
 import hashlib
+import io
 import json
 import math
 import os
@@ -67,6 +68,7 @@ def json_safe(value):
 class StateStore:
     def __init__(self):
         self.lock = threading.Lock()
+        self.event_archive = []
         self.state = {
             "running": False,
             "phase": "Ready",
@@ -97,15 +99,16 @@ class StateStore:
 
     def event(self, kind: str, text: str, station: str | None = None):
         with self.lock:
-            self.state["events"].insert(
-                0,
-                {
-                    "time": time.strftime("%H:%M:%S"),
-                    "kind": kind,
-                    "text": text,
-                    "station": station,
-                },
-            )
+            entry = {
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "time": time.strftime("%H:%M:%S"),
+                "kind": kind,
+                "text": text,
+                "station": station,
+            }
+            self.event_archive.append(entry)
+            self.event_archive = self.event_archive[-10000:]
+            self.state["events"].insert(0, entry)
             self.state["events"] = self.state["events"][:18]
             self.state["updated_at"] = time.time()
 
@@ -113,16 +116,44 @@ class StateStore:
         with self.lock:
             return json_safe(copy.deepcopy(self.state))
 
+    def execution_log_snapshot(self):
+        with self.lock:
+            return json_safe(copy.deepcopy(self.event_archive))
+
 
 STATE = StateStore()
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
-        if self.path.split("?", 1)[0] == "/api/state":
+        request_path = self.path.split("?", 1)[0]
+        if request_path == "/api/state":
             payload = json.dumps(STATE.snapshot(), separators=(",", ":")).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if request_path == "/api/execution-log.csv":
+            output = io.StringIO(newline="")
+            writer = csv.writer(output)
+            writer.writerow(("timestamp", "event_type", "station", "description"))
+            for event in STATE.execution_log_snapshot():
+                writer.writerow(
+                    (
+                        event.get("timestamp", ""),
+                        str(event.get("kind", "")).upper(),
+                        event.get("station") or "SYSTEM",
+                        event.get("text", ""),
+                    )
+                )
+            payload = ("\ufeff" + output.getvalue()).encode("utf-8")
+            filename = f"RG-AdaFedResidual_execution_log_{time.strftime('%Y%m%d_%H%M%S')}.csv"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/csv; charset=utf-8")
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
