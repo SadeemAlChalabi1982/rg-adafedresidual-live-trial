@@ -22,11 +22,11 @@ services:
       - key: MQTT_TOPIC_ROOT
         value: rgaf-sadeem-paper3-linked-20260909-v1
       - key: STATION_HEARTBEAT_TIMEOUT_SECONDS
-        value: "180"
+        value: "12"
       - key: QUORUM_STABLE_SECONDS
         value: "1"
       - key: QUORUM_LOSS_GRACE_SECONDS
-        value: "15"
+        value: "5"
       - key: WOKWI_AUSTIN_URL
         value: https://wokwi.com/projects/474707915927449601
       - key: WOKWI_TONGJI_URL
