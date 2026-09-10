@@ -27,15 +27,20 @@ MQTT_HOST = os.getenv("MQTT_HOST", "broker.hivemq.com")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 FEDERATED_ROUNDS = int(os.getenv("FEDERATED_ROUNDS", "6"))
 LIVE_TIMEOUT_SECONDS = max(
-    45.0,
+    20.0,
     float(
         os.getenv(
             "STATION_HEARTBEAT_TIMEOUT_SECONDS",
-            os.getenv("LIVE_TIMEOUT_SECONDS", "120"),
+            os.getenv("LIVE_TIMEOUT_SECONDS", "30"),
         )
     ),
 )
 CYCLE_SECONDS = float(os.getenv("CYCLE_SECONDS", "12"))
+QUORUM_STABLE_SECONDS = max(0.5, float(os.getenv("QUORUM_STABLE_SECONDS", "1")))
+QUORUM_LOSS_GRACE_SECONDS = max(
+    5.0,
+    float(os.getenv("QUORUM_LOSS_GRACE_SECONDS", "15")),
+)
 ONLINE_EPOCHS = max(1, int(os.getenv("ONLINE_LOCAL_EPOCHS", "1")))
 DEMO_ONLY = os.getenv("DEMO_ONLY", "false").lower() in {"1", "true", "yes"}
 PAV_ALGORITHM = "HMAC-SHA256"
@@ -90,6 +95,8 @@ class PublicFederatedEngine:
         self.pav_verified = {station: 0 for station in fs.STATIONS}
         self.pav_rejected = 0
         self.mqtt_connected = False
+        self.quorum_session_active = False
+        self.quorum_loss_signal_at = None
         self.mqtt_client = mqtt.Client(
             mqtt.CallbackAPIVersion.VERSION2,
             client_id=f"rgaf-render-{uuid.uuid4().hex[:10]}",
@@ -112,6 +119,61 @@ class PublicFederatedEngine:
             "nonce_replay_protection": True,
             "rejected_messages": self.pav_rejected,
         }
+
+    def signal_quorum_interruption(self, station: str | None = None):
+        """Expose a lost live link immediately while the grace timer confirms it."""
+        if not self.quorum_session_active:
+            return
+        if self.quorum_loss_signal_at is None:
+            self.quorum_loss_signal_at = time.time()
+        connected = (
+            sum(1 for name in fs.STATIONS if self.reported_online[name])
+            if self.mqtt_connected
+            else 0
+        )
+        snapshot = fs.STATE.snapshot()
+        deployment = dict(snapshot.get("deployment", {}))
+        deployment.update(
+            live_mode="LINK RECOVERY",
+            connected_stations=connected,
+            required_stations=len(fs.STATIONS),
+            disconnect_grace_seconds=QUORUM_LOSS_GRACE_SECONDS,
+            grace_remaining_seconds=QUORUM_LOSS_GRACE_SECONDS,
+        )
+        fs.STATE.update(
+            phase=f"Quorum interrupted — confirming link state for {int(QUORUM_LOSS_GRACE_SECONDS)} s",
+            deployment=deployment,
+            security=self.security_state("PAV LINK RECOVERY"),
+        )
+        fs.STATE.cloud(
+            status=(
+                f"Link verification window — {connected}/3 connected; "
+                f"{int(QUORUM_LOSS_GRACE_SECONDS)} s remaining"
+            ),
+            contributors=connected,
+        )
+        for name in fs.STATIONS:
+            current = snapshot.get("stations", {}).get(name, {})
+            if not current.get("sensors"):
+                continue
+            connected_now = self.mqtt_connected and self.reported_online[name]
+            fs.STATE.station(
+                name,
+                phase=(
+                    "Quorum paused — link remains connected"
+                    if connected_now
+                    else "Confirming station interruption"
+                ),
+                online=connected_now,
+                connection_state="READY" if connected_now else "RECOVERING",
+                control_mode="HOLDING LAST VALIDATED COMMAND",
+                source="quorum_interruption_verification",
+            )
+        fs.STATE.event(
+            "recovery",
+            f"Immediate quorum pause: {connected}/3 links; confirming for {int(QUORUM_LOSS_GRACE_SECONDS)} s",
+            station=station,
+        )
 
     def authenticated_local_update(self, station, round_number, epochs):
         update = self.edges[station].train_local(
@@ -186,6 +248,7 @@ class PublicFederatedEngine:
 
     def _on_disconnect(self, client, userdata, disconnect_flags, reason_code, properties=None):
         self.mqtt_connected = False
+        self.signal_quorum_interruption()
         fs.STATE.event("mqtt", f"MQTT disconnected: {reason_code}")
 
     def _on_message(self, client, userdata, message):
@@ -197,7 +260,10 @@ class PublicFederatedEngine:
                     self.reported_online[station] = True
                     self.last_status_seen[station] = time.time()
                 else:
+                    was_online = self.reported_online[station]
                     self.reported_online[station] = False
+                    if was_online:
+                        self.signal_quorum_interruption(station)
             return
         if "/telemetry/" not in message.topic:
             return
@@ -388,17 +454,31 @@ class PublicFederatedEngine:
             global_round=self.cloud.round,
         )
 
-    def hold_last_validated_state(self, station: str, connected: bool, age_seconds: float):
+    def hold_last_validated_state(
+        self,
+        station: str,
+        connected: bool,
+        age_seconds: float,
+        recovering: bool = False,
+    ):
         """Freeze the last validated values during a temporary link interruption."""
         fs.STATE.station(
             station,
             phase=(
-                "Link ready — waiting for full station quorum"
+                "Quorum paused — link remains connected"
                 if connected
+                else "Confirming station interruption"
+                if recovering
                 else "Connection interrupted — holding last validated state"
             ),
             online=connected,
-            connection_state="READY" if connected else "HOLDING",
+            connection_state=(
+                "READY"
+                if connected
+                else "RECOVERING"
+                if recovering
+                else "HOLDING"
+            ),
             stale_seconds=max(0.0, age_seconds),
             control_mode="HOLDING LAST VALIDATED COMMAND",
             source="last_validated_live_state",
@@ -472,7 +552,9 @@ class PublicFederatedEngine:
         self.train_federated_model()
         cycle = 0
         control_cycle = 0
-        station_cycle = 0
+        quorum_active = False
+        quorum_candidate_since = None
+        quorum_loss_since = None
         while True:
             cycle += 1
             self.request_station_rows(cycle)
@@ -480,10 +562,41 @@ class PublicFederatedEngine:
             self.drain_live_telemetry()
             now = time.time()
             live_stations, last_contact = self.live_station_status(now)
-            all_live = len(live_stations) == len(fs.STATIONS)
-            any_live = bool(live_stations)
-            if any_live:
-                station_cycle += 1
+            raw_all_live = len(live_stations) == len(fs.STATIONS)
+
+            if raw_all_live:
+                quorum_loss_since = None
+                self.quorum_loss_signal_at = None
+                if quorum_active:
+                    quorum_candidate_since = None
+                else:
+                    if quorum_candidate_since is None:
+                        quorum_candidate_since = now
+                    if now - quorum_candidate_since >= QUORUM_STABLE_SECONDS:
+                        quorum_active = True
+                        self.quorum_session_active = True
+                        quorum_candidate_since = None
+            else:
+                quorum_candidate_since = None
+                if quorum_active and quorum_loss_since is None:
+                    quorum_loss_since = self.quorum_loss_signal_at or now
+                if (
+                    quorum_active
+                    and quorum_loss_since is not None
+                    and now - quorum_loss_since >= QUORUM_LOSS_GRACE_SECONDS
+                ):
+                    quorum_active = False
+                    self.quorum_session_active = False
+                    self.quorum_loss_signal_at = None
+
+            all_live = quorum_active and raw_all_live
+            recovering = quorum_active and not raw_all_live
+            synchronizing = raw_all_live and not quorum_active
+            grace_remaining = (
+                max(0.0, QUORUM_LOSS_GRACE_SECONDS - (now - quorum_loss_since))
+                if recovering and quorum_loss_since is not None
+                else 0.0
+            )
 
             aggregation = None
             if all_live:
@@ -491,22 +604,17 @@ class PublicFederatedEngine:
                 self.control_cycle = control_cycle
                 aggregation = self.online_federated_update()
 
-            # Every fresh Wokwi station is displayed and regulated immediately.
-            # A three-station quorum is required only for a *new federated
-            # aggregation*, not for reading or controlling an already connected
-            # station with the latest validated global model.
-            for station in live_stations:
-                self.infer_and_update(
-                    station,
-                    self.latest_live[station]["sensors"],
-                    live=True,
-                    source=(
-                        "mqtt_federated_station_stream"
-                        if all_live
-                        else "mqtt_independent_station_stream"
-                    ),
-                )
-                if all_live:
+            # The unified laboratory is deliberately quorum-gated: sensing,
+            # aggregation, inference and returned pump commands advance only
+            # when all three Wokwi stations are present together.
+            if all_live:
+                for station in fs.STATIONS:
+                    self.infer_and_update(
+                        station,
+                        self.latest_live[station]["sensors"],
+                        live=True,
+                        source="mqtt_synchronized_three_station_stream",
+                    )
                     station_state = fs.STATE.snapshot()["stations"][station]
                     sensors = station_state["sensors"]
                     pumps = station_state["pumps"]
@@ -527,31 +635,39 @@ class PublicFederatedEngine:
                             "weights_hash": aggregation["weights_hash"],
                         }
                     )
-            if all_live:
                 self.update_summary()
 
             snapshot = fs.STATE.snapshot()["stations"]
             has_validated_state = any(
                 snapshot.get(station, {}).get("sensors") for station in fs.STATIONS
             )
-            for station in fs.STATIONS:
-                if station in live_stations:
-                    continue
-                age_seconds = (
-                    now - last_contact[station]
-                    if station in self.latest_live
-                    else 0.0
-                )
-                if snapshot.get(station, {}).get("sensors"):
-                    self.hold_last_validated_state(station, False, age_seconds)
-                else:
-                    self.hold_station_at_zero(station, False)
+            # When the quorum is not active, all cards are coordinated as one
+            # paused laboratory even if one or two MQTT links remain healthy.
+            if not all_live:
+                snapshot = fs.STATE.snapshot()["stations"]
+                for station in fs.STATIONS:
+                    if snapshot.get(station, {}).get("sensors"):
+                        age_seconds = (
+                            now - last_contact[station]
+                            if station in self.latest_live
+                            else 0.0
+                        )
+                        self.hold_last_validated_state(
+                            station,
+                            station in live_stations,
+                            age_seconds,
+                            recovering=recovering,
+                        )
+                    else:
+                        self.hold_station_at_zero(station, station in live_stations)
 
             live_mode = (
                 "LIVE MQTT"
                 if all_live
-                else "PARTIAL LIVE MQTT"
-                if any_live
+                else "LINK RECOVERY"
+                if recovering
+                else "SYNCHRONIZING STATIONS"
+                if synchronizing
                 else "HOLDING LAST STATE"
                 if has_validated_state
                 else "WAITING FOR STATIONS"
@@ -561,36 +677,47 @@ class PublicFederatedEngine:
                 phase=(
                     "Closed-loop MQTT regulation"
                     if all_live
-                    else f"Independent station regulation active — {len(live_stations)}/3 live; federated aggregation waiting"
-                    if any_live
+                    else f"Quorum interrupted — confirming link state for {int(grace_remaining + 0.999)} s"
+                    if recovering
+                    else "Three stations detected — synchronizing the unified cycle"
+                    if synchronizing
                     else "Connection interrupted — holding last validated state"
                     if has_validated_state
-                    else f"Safety standby — {len(live_stations)}/3 stations connected"
+                    else f"Safety standby — waiting for full quorum ({len(live_stations)}/3 connected)"
                 ),
-                live_cycle=station_cycle,
+                live_cycle=control_cycle,
                 federated_live_cycle=control_cycle,
                 federation_version=self.cloud.round,
                 security=self.security_state(
                     "PAV VERIFIED"
                     if all_live
-                    else "PAV READY — FEDERATED QUORUM WAITING"
-                    if any_live
+                    else "PAV LINK RECOVERY"
+                    if recovering
+                    else "PAV SYNCHRONIZING 3/3"
+                    if synchronizing
                     else "PAV HOLDING"
                 ),
                 broker={"connected": self.mqtt_connected, "host": MQTT_HOST, "port": MQTT_PORT},
                 deployment={
                     "transport": "PUBLIC MQTT",
                     "live_mode": live_mode,
-                    "accuracy_scope": "Each fresh Wokwi station immediately drives live inference and acknowledged pump commands with the latest validated global model; a new PAV-verified relation-guided aggregation waits for the three-station quorum; temporary link loss holds that station's last validated state",
+                    "accuracy_scope": "The unified cycle advances only with a synchronized three-station quorum; a confirmed interruption pauses all new inference and commands while preserving the last validated state",
                     "hardware": "Wokwi ESP32 sensor/actuator node + Python Raspberry Pi 4B logical client",
+                    "connected_stations": len(live_stations),
+                    "required_stations": len(fs.STATIONS),
+                    "activation_stability_seconds": QUORUM_STABLE_SECONDS,
+                    "disconnect_grace_seconds": QUORUM_LOSS_GRACE_SECONDS,
+                    "grace_remaining_seconds": round(grace_remaining, 1),
                 },
             )
             fs.STATE.cloud(
                 status=(
                     "Live commands returned to all Wokwi pumps"
                     if all_live
-                    else f"{len(live_stations)}/3 Wokwi stations live — independent inference active; federated aggregation waiting"
-                    if any_live
+                    else f"Link verification window — {len(live_stations)}/3 connected; {int(grace_remaining + 0.999)} s remaining"
+                    if recovering
+                    else "Three station links detected — aligning synchronized start"
+                    if synchronizing
                     else f"Holding last validated state — {len(live_stations)}/3 links fresh"
                     if has_validated_state
                     else f"Safety standby — waiting for {3 - len(live_stations)} station(s)"
@@ -599,21 +726,32 @@ class PublicFederatedEngine:
                 weights_hash=self.cloud.parameters.digest(),
             )
             fs.STATE.event(
-                "live" if all_live else "station" if any_live else "hold" if has_validated_state else "standby",
+                "live" if all_live else "recovery" if recovering else "sync" if synchronizing else "hold" if has_validated_state else "standby",
                 (
                     f"Control cycle {control_cycle}: all three Wokwi stations acknowledged"
                     if all_live
-                    else f"Station cycle {station_cycle}: {len(live_stations)}/3 Wokwi stations regulated; federated quorum pending"
-                    if any_live
-                    else f"Holding cycle {station_cycle}: {len(live_stations)}/3 links fresh"
+                    else f"Quorum recovery: {len(live_stations)}/3 links; {int(grace_remaining + 0.999)} s before confirmed stop"
+                    if recovering
+                    else "Three-station quorum detected; synchronizing start"
+                    if synchronizing
+                    else f"Holding cycle {control_cycle}: {len(live_stations)}/3 links fresh"
                     if has_validated_state
                     else f"Zero-output interlock: {len(live_stations)}/3 stations connected"
                 ),
             )
-            # Preserve the 12-second scientific cycle, but poll for a newly
-            # started Wokwi station.  A new station wakes the next pass within
-            # about 250 ms instead of waiting for the full remaining interval.
+            # Preserve the 12-second scientific cycle while polling link-state
+            # changes every 250 ms. New quorum members and lost members both
+            # wake the next state evaluation promptly.
             remaining = max(0.2, CYCLE_SECONDS - min(1.0, CYCLE_SECONDS / 3.0))
+            if synchronizing and quorum_candidate_since is not None:
+                remaining = min(
+                    remaining,
+                    max(0.2, QUORUM_STABLE_SECONDS - (now - quorum_candidate_since)),
+                )
+            if recovering and quorum_loss_since is not None:
+                # Refresh the visible verification countdown without advancing
+                # a scientific control cycle or issuing a new pump command.
+                remaining = min(remaining, 1.0, max(0.2, grace_remaining))
             deadline = time.monotonic() + remaining
             baseline = set(live_stations)
             while True:
@@ -623,7 +761,7 @@ class PublicFederatedEngine:
                 time.sleep(min(0.25, wait_seconds))
                 self.drain_live_telemetry()
                 refreshed, _ = self.live_station_status()
-                if set(refreshed) - baseline:
+                if set(refreshed) != baseline:
                     break
 
 
