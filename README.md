@@ -8,7 +8,7 @@ This branch is the separately deployed, three-station Wokwi-linked edition. It d
 - Each station publishes its own telemetry and heartbeat on an isolated topic namespace through the public MQTT broker.
 - Three logical Raspberry Pi clients hosted by Render execute private local RG-AdaFedResidual updates.
 - The coordinator verifies the three client updates through the PAV HMAC-SHA256 layer, performs relation-guided aggregation, broadcasts the new global version, runs H6 inference, and returns a separate dosing command to each Wokwi station.
-- Each Wokwi station appears live immediately, runs inference with the latest validated global model, and receives its own acknowledged dosing command. A new relation-guided federated aggregation begins when the three-station quorum is present; a short interruption holds only the affected station's last validated readings and command instead of resetting them.
+- The unified cycle starts only after all three Wokwi stations are online together. A one-second synchronization window avoids a staggered visual start, while a suspected link loss pauses motion and new commands immediately and is confirmed for 15 seconds before the dashboard enters a coordinated hold state. The last validated readings and commands remain visible instead of resetting to zero.
 
 ## Isolation from the preserved edition
 
@@ -28,4 +28,4 @@ Start command: `python app.py`
 
 Health check: `/api/state`
 
-The service runs on Render's free plan and may sleep after inactivity. Opening the linked dashboard wakes it; start all three linked Wokwi stations after the dashboard reports that the MQTT broker is connected.
+The service runs on Render's free plan and may sleep after inactivity. Opening the linked dashboard wakes it; start all three linked Wokwi stations after the dashboard reports that the MQTT broker is connected. Control cycles continue without a fixed cycle-count limit while the three-station quorum remains available.
