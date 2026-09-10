@@ -469,7 +469,10 @@ document.querySelector('#replay').addEventListener('click', () => {
 
 function renderSummary(summary) {
   const values = order.map(key => summary[key]).filter(Boolean);
-  if (!values.length) return;
+  if (!values.length) {
+    document.querySelector('#summary').innerHTML = '<div class="empty">Waiting for the first synchronized three-station regulation cycle.</div>';
+    return;
+  }
   document.querySelector('#summary').innerHTML = `<table><thead><tr><th>Station</th><th>Data origin</th><th>Samples</th><th>Turbidity acceptance</th><th>Chlorine acceptance</th><th>Overall water-quality acceptance</th><th>Average alum dose</th><th>Average chlorine dose</th></tr></thead><tbody>${values.map(row => `<tr><td><b>${esc(row.station)}</b></td><td>${esc(row.origin)}</td><td>${row.n}</td><td>${Number(row.turbidity_compliance_pct).toFixed(1)}%</td><td>${Number(row.chlorine_compliance_pct).toFixed(1)}%</td><td><b class="acceptance-value">${Number(row.joint_compliance_pct).toFixed(1)}%</b></td><td>${Number(row.mean_alum_pct).toFixed(1)}%</td><td>${Number(row.mean_chlorine_pct).toFixed(1)}%</td></tr>`).join('')}</tbody></table><div class="disclosure"><b>Acceptance percentage</b> is the share of completed cycles that met the configured treated-water target. These rolling operational statistics update with the live stream; fixed paper results remain unchanged.</div>`;
 }
 
