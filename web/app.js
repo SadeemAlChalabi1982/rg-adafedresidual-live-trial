@@ -184,7 +184,7 @@ function updatePerturbationStatus(id, perturbation = {}) {
   if (!card) return;
   const status = perturbation.status || 'NORMAL';
   card.dataset.status = status.toLowerCase();
-  const statusText = status === 'TRANSMITTED' ? 'IN TRANSIT' : status;
+  const statusText = status === 'TRANSMITTED' ? 'IN TRANSIT' : status === 'ACTIVE' ? 'ACTIVE · HELD' : status;
   document.querySelector(`#${id}-perturb-status`).textContent = status === 'ACTIVE' && perturbation.applied_cycle
     ? `${statusText} · CYCLE ${perturbation.applied_cycle}`
     : statusText;
