@@ -35,6 +35,11 @@ ORIGINS = {
     "tongji": "PUBLISHED_FIELD",
     "virtual": "DISCLOSED_DIGITAL_TWIN",
 }
+WOKWI_URLS = {
+    "austin": "https://wokwi.com/projects/474707915927449601",
+    "tongji": "https://wokwi.com/projects/474708305707343873",
+    "virtual": "https://wokwi.com/projects/474708525672428545",
+}
 FEATURES = (
     "raw_turbidity",
     "filtered_turbidity",
@@ -49,6 +54,57 @@ FEATURES = (
     "raw_roll24",
 )
 TARGETS = ("forecast_h6", "alum_percent", "chlorine_percent")
+PERTURBATION_LEVELS = (-100, -75, -50, -25, -10, 0, 10, 25, 50, 75, 100)
+PERTURBATION_VARIABLES = {
+    "raw_turbidity": {
+        "label": "Raw turbidity load",
+        "sensor": "raw_turbidity",
+        "unit": "NTU",
+        "effect": "increase",
+    },
+    "flow": {
+        "label": "Hydraulic flow load",
+        "sensor": "flow",
+        "unit": "m³/h",
+        "effect": "increase",
+    },
+    "ph_shift": {
+        "label": "pH shift",
+        "sensor": "ph",
+        "unit": "pH",
+        "effect": "bidirectional shift",
+    },
+    "chlorine_demand": {
+        "label": "Chlorine demand",
+        "sensor": "residual_chlorine",
+        "unit": "mg/L",
+        "effect": "decrease",
+    },
+}
+
+
+def normal_perturbation_state():
+    return {
+        "status": "NORMAL",
+        "pending": False,
+        "active": False,
+        "request_id": None,
+        "variable": "raw_turbidity",
+        "label": PERTURBATION_VARIABLES["raw_turbidity"]["label"],
+        "percent": 0,
+        "sensor": "raw_turbidity",
+        "unit": "NTU",
+        "direction": "none",
+        "original_value": None,
+        "adjusted_value": None,
+        "applied_cycle": None,
+        "forecast_baseline": None,
+        "forecast_adjusted": None,
+        "forecast_delta": None,
+        "baseline_pumps": None,
+        "adjusted_pumps": None,
+        "pump_delta": None,
+    }
 
 
 def json_safe(value):
@@ -76,6 +132,9 @@ class StateStore:
             "max_rounds": 0,
             "cloud": {"status": "Waiting", "contributors": 0, "weights_hash": "—"},
             "stations": {},
+            "perturbations": {
+                station: normal_perturbation_state() for station in STATIONS
+            },
             "events": [],
             "summary": {},
             "updated_at": time.time(),
@@ -120,11 +179,68 @@ class StateStore:
         with self.lock:
             return json_safe(copy.deepcopy(self.event_archive))
 
+    def queue_perturbation(self, station: str, variable: str, percent: int):
+        spec = PERTURBATION_VARIABLES[variable]
+        with self.lock:
+            request_id = str(time.time_ns())
+            current = normal_perturbation_state()
+            current.update(
+                status="PENDING",
+                pending=True,
+                active=True,
+                request_id=request_id,
+                variable=variable,
+                label=spec["label"],
+                percent=int(percent),
+                sensor=spec["sensor"],
+                unit=spec["unit"],
+                direction=spec["effect"],
+            )
+            self.state["perturbations"][station] = current
+            self.state["updated_at"] = time.time()
+            return json_safe(copy.deepcopy(current))
+
+    def reset_perturbation(self, station: str):
+        with self.lock:
+            self.state["perturbations"][station] = normal_perturbation_state()
+            self.state["updated_at"] = time.time()
+            return json_safe(copy.deepcopy(self.state["perturbations"][station]))
+
+    def pending_perturbation(self, station: str):
+        with self.lock:
+            current = self.state["perturbations"].get(station, {})
+            if not current.get("active"):
+                return None
+            if current.get("pending"):
+                current["status"] = "TRANSMITTED"
+            self.state["updated_at"] = time.time()
+            return json_safe(copy.deepcopy(current))
+
+    def complete_perturbation(self, station: str, request_id: str, **result):
+        with self.lock:
+            current = self.state["perturbations"].get(station, {})
+            if current.get("request_id") != request_id:
+                return False
+            first_application = current.get("status") != "ACTIVE"
+            current.update(result)
+            current.update(status="ACTIVE", pending=False, active=True)
+            self.state["updated_at"] = time.time()
+            return first_application
+
 
 STATE = StateStore()
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
+    def send_json(self, status: int, document: dict):
+        payload = json.dumps(document, separators=(",", ":")).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
     def do_GET(self):
         request_path = self.path.split("?", 1)[0]
         if request_path == "/api/state":
@@ -160,6 +276,53 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.wfile.write(payload)
             return
         super().do_GET()
+
+    def do_POST(self):
+        request_path = self.path.split("?", 1)[0]
+        if request_path != "/api/perturbation":
+            self.send_json(404, {"ok": False, "error": "Not found"})
+            return
+
+        origin = self.headers.get("Origin", "")
+        host = self.headers.get("Host", "")
+        if origin and host and not origin.rstrip("/").endswith(host):
+            self.send_json(403, {"ok": False, "error": "Same-origin control required"})
+            return
+
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > 4096:
+                raise ValueError("Invalid request length")
+            document = json.loads(self.rfile.read(length).decode("utf-8"))
+            station = str(document.get("station", "")).lower()
+            action = str(document.get("action", "apply")).lower()
+            if station not in STATIONS:
+                raise ValueError("Unknown station")
+            if action not in {"apply", "reset"}:
+                raise ValueError("Unknown perturbation action")
+            if action == "reset":
+                state = STATE.reset_perturbation(station)
+                STATE.event("perturbation", "Controlled input returned to dataset baseline", station)
+                self.send_json(200, {"ok": True, "perturbation": state})
+                return
+            variable = str(document.get("variable", ""))
+            percent = int(document.get("percent", 0))
+            if variable not in PERTURBATION_VARIABLES:
+                raise ValueError("Unknown perturbation variable")
+            if percent not in PERTURBATION_LEVELS:
+                raise ValueError(
+                    "Perturbation level must be -100, -75, -50, -25, -10, "
+                    "0, 10, 25, 50, 75, or 100 percent"
+                )
+            state = STATE.queue_perturbation(station, variable, percent)
+            STATE.event(
+                "perturbation",
+                f"Queued and held {state['label']} at {percent}% until operator reset",
+                station,
+            )
+            self.send_json(202, {"ok": True, "perturbation": state})
+        except (ValueError, TypeError, json.JSONDecodeError) as error:
+            self.send_json(400, {"ok": False, "error": str(error)})
 
     def log_message(self, fmt, *args):
         return
@@ -656,6 +819,7 @@ def run(args):
             pumps={"alum": 0, "chlorine": 0},
             pump_alarm=False,
             online=True,
+            wokwi_url=WOKWI_URLS[station],
         )
 
     for round_number in range(1, args.rounds + 1):

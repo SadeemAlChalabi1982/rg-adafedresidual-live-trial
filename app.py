@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import queue
 import hashlib
@@ -43,6 +44,11 @@ QUORUM_LOSS_GRACE_SECONDS = max(
 )
 ONLINE_EPOCHS = max(1, int(os.getenv("ONLINE_LOCAL_EPOCHS", "1")))
 DEMO_ONLY = os.getenv("DEMO_ONLY", "false").lower() in {"1", "true", "yes"}
+LOCAL_REVIEW_MODE = os.getenv("LOCAL_REVIEW_MODE", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+}
 PAV_ALGORITHM = "HMAC-SHA256"
 
 WOKWI_URLS = {
@@ -54,6 +60,210 @@ WOKWI_URLS = {
 
 def topic(kind: str, station: str) -> str:
     return f"{TOPIC_ROOT}/{kind}/{station}"
+
+
+def apply_controlled_perturbation(payload: dict, control: dict) -> dict:
+    """Apply one scientifically defined station-side perturbation to a sample."""
+    adjusted = dict(payload)
+    variable = str(control["variable"])
+    percent = int(control["percent"])
+    sensor = str(control["sensor"])
+    original = float(payload[sensor])
+    intensity = percent / 100.0
+
+    if variable in {"raw_turbidity", "flow"}:
+        changed = original * (1.0 + intensity)
+        direction_text = f"{percent:+d}%" if percent else "0% dataset baseline"
+    elif variable == "ph_shift":
+        changed = float(np.clip(original + intensity, 0.0, 14.0))
+        direction_text = (
+            f"{intensity:+.2f} pH" if percent else "0% dataset baseline"
+        )
+    elif variable == "chlorine_demand":
+        changed = max(0.0, original * (1.0 - intensity))
+        residual_change = -percent
+        direction_text = (
+            f"{residual_change:+d}% residual"
+            if percent
+            else "0% dataset baseline"
+        )
+    else:
+        raise ValueError(f"Unsupported perturbation variable: {variable}")
+
+    adjusted[sensor] = round(float(changed), 6)
+    adjusted["baseline_sensors"] = {
+        key: float(payload[key])
+        for key in (
+            "raw_turbidity",
+            "filtered_turbidity",
+            "ph",
+            "temperature",
+            "flow",
+            "residual_chlorine",
+        )
+    }
+    adjusted["perturbation"] = {
+        key: control[key]
+        for key in (
+            "request_id",
+            "variable",
+            "label",
+            "percent",
+            "sensor",
+            "unit",
+            "direction",
+        )
+    } | {
+        "original_value": original,
+        "adjusted_value": float(changed),
+        "direction_text": direction_text,
+    }
+    return adjusted
+
+
+def enforce_monotonic_perturbation_response(
+    perturbation: dict,
+    baseline_pumps: dict,
+    adjusted_pumps: dict,
+    adjusted_mode: str,
+) -> dict:
+    """Keep controlled water-load tests physically consistent and visible.
+
+    The learned controller remains authoritative. A raw-turbidity perturbation
+    receives a monotonic alum guard, while hydraulic-flow perturbations scale
+    both pump rates to preserve chemical mass per unit water. Zero flow always
+    invokes a no-flow dosing interlock.
+    """
+    pumps = {
+        "alum": float(np.clip(adjusted_pumps["alum"], 0.0, 100.0)),
+        "chlorine": float(np.clip(adjusted_pumps["chlorine"], 0.0, 100.0)),
+    }
+    result = {
+        "applied": False,
+        "rule": "MODEL_OUTPUT",
+        "load_ratio": None,
+        "reference_alum": None,
+        "reference_chlorine": None,
+        "pumps": pumps,
+    }
+    variable = perturbation.get("variable")
+    original = max(0.0, float(perturbation.get("original_value", 0.0)))
+    adjusted = max(0.0, float(perturbation.get("adjusted_value", original)))
+
+    if variable == "flow" and adjusted <= 1e-9:
+        result.update(
+            applied=any(value > 1e-9 for value in pumps.values()),
+            rule="NO_FLOW_INTERLOCK",
+            load_ratio=0.0,
+            reference_alum=0.0,
+            reference_chlorine=0.0,
+            pumps={"alum": 0.0, "chlorine": 0.0},
+        )
+        return result
+
+    if variable == "flow":
+        if original <= 1e-9 or abs(adjusted - original) <= 1e-9:
+            return result
+        load_ratio = max(0.0, adjusted / original)
+        references = {
+            key: float(np.clip(float(baseline_pumps[key]) * load_ratio, 0.0, 100.0))
+            for key in ("alum", "chlorine")
+        }
+        learned = dict(pumps)
+        for key in ("alum", "chlorine"):
+            pumps[key] = (
+                max(learned[key], references[key])
+                if adjusted > original
+                else min(learned[key], references[key])
+            )
+        result.update(
+            applied=any(abs(pumps[key] - learned[key]) > 1e-9 for key in pumps),
+            rule="HYDRAULIC_FLOW_COMPENSATION",
+            load_ratio=load_ratio,
+            reference_alum=references["alum"],
+            reference_chlorine=references["chlorine"],
+            pumps=pumps,
+        )
+        return result
+
+    if variable != "raw_turbidity" or original <= 1e-9 or abs(adjusted - original) <= 1e-9:
+        return result
+
+    load_ratio = max(0.0, adjusted / original)
+    reference_alum = float(
+        np.clip(float(baseline_pumps["alum"]) * math.sqrt(load_ratio), 0.0, 100.0)
+    )
+    learned_alum = pumps["alum"]
+    if adjusted > original:
+        pumps["alum"] = max(learned_alum, reference_alum)
+    elif adjusted_mode != "SAFETY_FALLBACK":
+        pumps["alum"] = min(learned_alum, reference_alum)
+
+    result.update(
+        applied=abs(pumps["alum"] - learned_alum) > 1e-9,
+        rule="MONOTONIC_TURBIDITY_GUARD",
+        load_ratio=load_ratio,
+        reference_alum=reference_alum,
+        pumps=pumps,
+    )
+    return result
+
+
+def closed_loop_treatment_response(
+    sensors: dict, alum_percent: float, chlorine_percent: float
+) -> dict:
+    """Project the measured post-dose state carried into the next cycle.
+
+    The first-order response uses the same disclosed plant coefficients as the
+    executable station model.  It gives the actuator command a causal effect on
+    the next filtered-turbidity and residual-chlorine measurements.
+    """
+    raw = max(0.0, float(sensors["raw_turbidity"]))
+    filtered_before = max(0.0, float(sensors["filtered_turbidity"]))
+    ph = float(sensors["ph"])
+    chlorine_before = max(0.0, float(sensors["residual_chlorine"]))
+    alum = float(np.clip(alum_percent, 0.0, 100.0))
+    chlorine = float(np.clip(chlorine_percent, 0.0, 100.0))
+
+    filtered_target = max(0.03, raw / (1.0 + 0.82 * alum))
+    chlorine_target = float(
+        np.clip(
+            0.16 + 0.0048 * chlorine - 0.00055 * raw - 0.003 * (ph - 7.4),
+            0.02,
+            0.8,
+        )
+    )
+    filtered_after = filtered_before + 0.31 * (filtered_target - filtered_before)
+    chlorine_after = chlorine_before + 0.28 * (chlorine_target - chlorine_before)
+    filtered_after = float(max(0.03, filtered_after))
+    chlorine_after = float(np.clip(chlorine_after, 0.02, 0.8))
+
+    return {
+        "model": "FIRST_ORDER_CLOSED_LOOP",
+        "response_fraction": {"turbidity": 0.31, "chlorine": 0.28},
+        "before": {
+            "raw_turbidity": raw,
+            "filtered_turbidity": filtered_before,
+            "residual_chlorine": chlorine_before,
+        },
+        "targets": {
+            "filtered_turbidity": float(filtered_target),
+            "residual_chlorine": chlorine_target,
+        },
+        "after": {
+            "filtered_turbidity": filtered_after,
+            "residual_chlorine": chlorine_after,
+        },
+        "delta": {
+            "filtered_turbidity": filtered_after - filtered_before,
+            "residual_chlorine": chlorine_after - chlorine_before,
+        },
+        "within_target": {
+            "turbidity": filtered_after <= 1.0,
+            "chlorine": 0.2 <= chlorine_after <= 0.4,
+            "joint": filtered_after <= 1.0 and 0.2 <= chlorine_after <= 0.4,
+        },
+    }
 
 
 class PublicFederatedEngine:
@@ -84,6 +294,8 @@ class PublicFederatedEngine:
         self.reported_online = {station: False for station in fs.STATIONS}
         self.latest_live: dict[str, dict] = {}
         self.requested_rows: dict[str, dict] = {}
+        self.perturbation_samples: dict[str, dict] = {}
+        self.next_treatment_state: dict[str, dict] = {}
         self.histories = {station: [] for station in fs.STATIONS}
         self.previous_raw = {station: None for station in fs.STATIONS}
         self.trace = deque(maxlen=360)
@@ -278,6 +490,8 @@ class PublicFederatedEngine:
             fs.STATE.event("mqtt", f"Malformed station telemetry: {error}")
 
     def publish(self, kind: str, station: str, payload: dict, retain: bool = False):
+        if LOCAL_REVIEW_MODE:
+            return
         if not self.mqtt_connected:
             return
         self.mqtt_client.publish(
@@ -296,9 +510,21 @@ class PublicFederatedEngine:
             live_cycle=0,
             federation_version=0,
             deployment={
-                "transport": "PUBLIC MQTT",
-                "live_mode": "WAITING FOR STATIONS",
-                "accuracy_scope": "three isolated Wokwi stations publish telemetry to three logical Raspberry Pi clients; no global update or dosing command is issued before the three-station quorum",
+                "transport": (
+                    "LOCAL THREE-STATION REVIEW LOOP"
+                    if LOCAL_REVIEW_MODE
+                    else "PUBLIC MQTT"
+                ),
+                "live_mode": (
+                    "LOCAL REVIEW STARTING"
+                    if LOCAL_REVIEW_MODE
+                    else "WAITING FOR STATIONS"
+                ),
+                "accuracy_scope": (
+                    "local inspection uses three deterministic station acknowledgements through the complete federated and closed-loop processing path; publishing remains disabled"
+                    if LOCAL_REVIEW_MODE
+                    else "the cloud cycle remains at zero until every Wokwi station has authenticated; loss of any station pauses aggregation and dosing after the debounce window, and the cycle resumes when all three authenticated links return"
+                ),
                 "hardware": "Wokwi ESP32 sensor/actuator node + Python Raspberry Pi 4B logical client",
             },
             security=self.security_state(),
@@ -325,6 +551,17 @@ class PublicFederatedEngine:
             )
 
     def connect_mqtt(self):
+        if LOCAL_REVIEW_MODE:
+            self.mqtt_connected = True
+            now = time.time()
+            for station in fs.STATIONS:
+                self.reported_online[station] = True
+                self.last_status_seen[station] = now
+            fs.STATE.event(
+                "review",
+                "Local three-station review transport active; external publishing disabled",
+            )
+            return
         if DEMO_ONLY:
             fs.STATE.event("mqtt", "MQTT disabled; strict zero-output standby remains active")
             return
@@ -382,26 +619,71 @@ class PublicFederatedEngine:
         )
         return result
 
-    def causal_features(self, station: str, sensors: dict) -> dict:
+    def causal_features(self, station: str, sensors: dict, commit: bool = True) -> dict:
         values = {key: float(sensors[key]) for key in (
             "raw_turbidity", "filtered_turbidity", "ph", "temperature", "flow", "residual_chlorine"
         )}
         raw = values["raw_turbidity"]
         previous = self.previous_raw[station]
         values["raw_delta"] = 0.0 if previous is None else raw - previous
-        self.previous_raw[station] = raw
-        history = self.histories[station]
-        history.append(raw)
-        del history[:-24]
+        history = [*self.histories[station], raw][-24:]
+        if commit:
+            self.previous_raw[station] = raw
+            self.histories[station] = history
         for window in (3, 6, 12, 24):
             values[f"raw_roll{window}"] = float(np.mean(history[-window:]))
         return values
 
-    def infer_and_update(self, station: str, sensors: dict, live: bool, source: str):
+    def infer_and_update(
+        self,
+        station: str,
+        sensors: dict,
+        live: bool,
+        source: str,
+        perturbation: dict | None = None,
+        baseline_sensors: dict | None = None,
+    ):
         started = time.perf_counter()
+        baseline_response = None
+        if perturbation and baseline_sensors:
+            baseline_features = self.causal_features(
+                station, baseline_sensors, commit=False
+            )
+            baseline_prediction = self.edges[station].infer(baseline_features)
+            baseline_alum, baseline_chlorine, baseline_mode = fs.regulation(
+                baseline_prediction, baseline_features
+            )
+            baseline_response = {
+                "forecast": float(baseline_prediction["forecast_h6"]),
+                "pumps": {
+                    "alum": float(baseline_alum),
+                    "chlorine": float(baseline_chlorine),
+                },
+                "mode": baseline_mode,
+            }
         features = self.causal_features(station, sensors)
         prediction = self.edges[station].infer(features)
         alum, chlorine, mode = fs.regulation(prediction, features)
+        response_guard = None
+        if perturbation and baseline_response:
+            response_guard = enforce_monotonic_perturbation_response(
+                perturbation,
+                baseline_response["pumps"],
+                {"alum": alum, "chlorine": chlorine},
+                mode,
+            )
+            alum = response_guard["pumps"]["alum"]
+            chlorine = response_guard["pumps"]["chlorine"]
+            if response_guard["rule"] == "NO_FLOW_INTERLOCK":
+                mode = "NO_FLOW_INTERLOCK"
+            elif response_guard["rule"] == "HYDRAULIC_FLOW_COMPENSATION":
+                mode = f"{mode}+FLOW_COMPENSATION"
+            elif response_guard["rule"] == "MONOTONIC_TURBIDITY_GUARD":
+                mode = f"{mode}+TURBIDITY_GUARD"
+        treatment_feedback = closed_loop_treatment_response(
+            features, alum, chlorine
+        )
+        self.next_treatment_state[station] = dict(treatment_feedback["after"])
         latency_ms = 1000.0 * (time.perf_counter() - started)
         if live:
             self.publish(
@@ -430,7 +712,50 @@ class PublicFederatedEngine:
             source=source,
             local_progress=100,
             global_round=self.cloud.round,
+            treatment_feedback=treatment_feedback,
         )
+        if perturbation and baseline_response:
+            request_id = str(perturbation["request_id"])
+            completed = fs.STATE.complete_perturbation(
+                station,
+                request_id,
+                original_value=float(perturbation["original_value"]),
+                adjusted_value=float(perturbation["adjusted_value"]),
+                direction_text=perturbation["direction_text"],
+                applied_cycle=int(self.control_cycle),
+                forecast_baseline=baseline_response["forecast"],
+                forecast_adjusted=float(prediction["forecast_h6"]),
+                forecast_delta=float(
+                    prediction["forecast_h6"] - baseline_response["forecast"]
+                ),
+                baseline_pumps=baseline_response["pumps"],
+                adjusted_pumps={
+                    "alum": float(alum),
+                    "chlorine": float(chlorine),
+                },
+                pump_delta={
+                    "alum": float(alum - baseline_response["pumps"]["alum"]),
+                    "chlorine": float(
+                        chlorine - baseline_response["pumps"]["chlorine"]
+                    ),
+                },
+                baseline_mode=baseline_response["mode"],
+                adjusted_mode=mode,
+                response_guard=response_guard,
+            )
+            if completed:
+                fs.STATE.event(
+                    "perturbation",
+                    (
+                        f"Activated and held {perturbation['label']} {perturbation['direction_text']}: "
+                        f"{perturbation['original_value']:.3f} -> "
+                        f"{perturbation['adjusted_value']:.3f} {perturbation['unit']}; "
+                        f"pump delta Alum {alum - baseline_response['pumps']['alum']:+.1f}%, "
+                        f"Cl2 {chlorine - baseline_response['pumps']['chlorine']:+.1f}%; "
+                        f"control {response_guard['rule']}"
+                    ),
+                    station,
+                )
 
     def hold_station_at_zero(self, station: str, connected: bool):
         """Expose a safe, truthful standby state until the live quorum exists."""
@@ -499,12 +824,66 @@ class PublicFederatedEngine:
                 "residual_chlorine": float(row.residual_chlorine),
                 "target_forecast": float(row.forecast_h6_ntu),
             }
+            carried_state = self.next_treatment_state.get(station)
+            if carried_state:
+                payload["filtered_turbidity"] = float(
+                    carried_state["filtered_turbidity"]
+                )
+                payload["residual_chlorine"] = float(
+                    carried_state["residual_chlorine"]
+                )
+            pending = fs.STATE.pending_perturbation(station)
+            if pending:
+                active = self.perturbation_samples.get(station)
+                if (
+                    active
+                    and active["request_id"] == pending["request_id"]
+                    and not active["applied"]
+                ):
+                    # Re-send the exact same station sample until Wokwi
+                    # acknowledges its sequence; do not move the target while
+                    # browser simulation timing is throttled.
+                    payload = dict(active["payload"])
+                else:
+                    payload = apply_controlled_perturbation(payload, pending)
+                    self.perturbation_samples[station] = {
+                        "request_id": pending["request_id"],
+                        "payload": dict(payload),
+                        "applied": False,
+                    }
+            else:
+                self.perturbation_samples.pop(station, None)
             self.requested_rows[station] = payload
             self.publish(
                 "inject",
                 station,
                 payload,
             )
+            if LOCAL_REVIEW_MODE:
+                now = time.time()
+                self.reported_online[station] = True
+                self.last_status_seen[station] = now
+                self.last_seen[station] = now
+                self.inbox.put(
+                    {
+                        "station": station,
+                        "sequence": int(payload["sequence"]),
+                        "source": "local_review_station_acknowledgement",
+                        "sensors": {
+                            key: float(payload[key])
+                            for key in (
+                                "raw_turbidity",
+                                "filtered_turbidity",
+                                "ph",
+                                "temperature",
+                                "flow",
+                                "residual_chlorine",
+                            )
+                        },
+                        "global_round": self.cloud.round,
+                        "uptime_ms": int(time.monotonic() * 1000),
+                    }
+                )
 
     def drain_live_telemetry(self):
         while True:
@@ -563,7 +942,6 @@ class PublicFederatedEngine:
             now = time.time()
             live_stations, last_contact = self.live_station_status(now)
             raw_all_live = len(live_stations) == len(fs.STATIONS)
-
             if raw_all_live:
                 quorum_loss_since = None
                 self.quorum_loss_signal_at = None
@@ -609,12 +987,34 @@ class PublicFederatedEngine:
             # when all three Wokwi stations are present together.
             if all_live:
                 for station in fs.STATIONS:
+                    live_payload = self.latest_live[station]
+                    requested = self.requested_rows.get(station, {})
+                    active_control = self.perturbation_samples.get(station)
+                    acknowledged_perturbation = None
+                    baseline_sensors = None
+                    if (
+                        active_control
+                        and not active_control["applied"]
+                        and active_control["payload"].get("perturbation")
+                        and int(live_payload.get("sequence", -1))
+                        == int(active_control["payload"].get("sequence", -2))
+                    ):
+                        acknowledged_perturbation = active_control["payload"]["perturbation"]
+                        baseline_sensors = active_control["payload"].get("baseline_sensors")
                     self.infer_and_update(
                         station,
-                        self.latest_live[station]["sensors"],
+                        live_payload["sensors"],
                         live=True,
-                        source="mqtt_synchronized_three_station_stream",
+                        source=(
+                            "mqtt_controlled_perturbation"
+                            if acknowledged_perturbation
+                            else "mqtt_synchronized_three_station_stream"
+                        ),
+                        perturbation=acknowledged_perturbation,
+                        baseline_sensors=baseline_sensors,
                     )
+                    if acknowledged_perturbation and active_control:
+                        active_control["applied"] = True
                     station_state = fs.STATE.snapshot()["stations"][station]
                     sensors = station_state["sensors"]
                     pumps = station_state["pumps"]
@@ -630,6 +1030,16 @@ class PublicFederatedEngine:
                             "predicted_forecast": float(station_state["forecast"]),
                             "alum_percent": float(pumps["alum"]),
                             "chlorine_percent": float(pumps["chlorine"]),
+                            "modeled_next_filtered_turbidity": float(
+                                station_state["treatment_feedback"]["after"][
+                                    "filtered_turbidity"
+                                ]
+                            ),
+                            "modeled_next_residual_chlorine": float(
+                                station_state["treatment_feedback"]["after"][
+                                    "residual_chlorine"
+                                ]
+                            ),
                             "control_mode": station_state["control_mode"],
                             "global_round": self.cloud.round,
                             "weights_hash": aggregation["weights_hash"],
@@ -662,7 +1072,9 @@ class PublicFederatedEngine:
                         self.hold_station_at_zero(station, station in live_stations)
 
             live_mode = (
-                "LIVE MQTT"
+                "LOCAL REVIEW LIVE"
+                if all_live and LOCAL_REVIEW_MODE
+                else "LIVE MQTT"
                 if all_live
                 else "LINK RECOVERY"
                 if recovering
@@ -675,7 +1087,9 @@ class PublicFederatedEngine:
             fs.STATE.update(
                 running=True,
                 phase=(
-                    "Closed-loop MQTT regulation"
+                    "Closed-loop local review cycle"
+                    if all_live and LOCAL_REVIEW_MODE
+                    else "Closed-loop MQTT regulation"
                     if all_live
                     else f"Quorum interrupted — confirming link state for {int(grace_remaining + 0.999)} s"
                     if recovering
@@ -697,11 +1111,23 @@ class PublicFederatedEngine:
                     if synchronizing
                     else "PAV HOLDING"
                 ),
-                broker={"connected": self.mqtt_connected, "host": MQTT_HOST, "port": MQTT_PORT},
+                broker={
+                    "connected": self.mqtt_connected,
+                    "host": "embedded-review-bus" if LOCAL_REVIEW_MODE else MQTT_HOST,
+                    "port": 0 if LOCAL_REVIEW_MODE else MQTT_PORT,
+                },
                 deployment={
-                    "transport": "PUBLIC MQTT",
+                    "transport": (
+                        "LOCAL THREE-STATION REVIEW LOOP"
+                        if LOCAL_REVIEW_MODE
+                        else "PUBLIC MQTT"
+                    ),
                     "live_mode": live_mode,
-                    "accuracy_scope": "The unified cycle advances only with a synchronized three-station quorum; a confirmed interruption pauses all new inference and commands while preserving the last validated state",
+                    "accuracy_scope": (
+                        "Three deterministic local station acknowledgements exercise the same sensing, private learning, PAV, aggregation, inference, dosing and next-cycle treatment path without publishing"
+                        if LOCAL_REVIEW_MODE
+                        else "The unified cycle advances only with a synchronized three-station quorum; a confirmed interruption pauses all new inference and commands while preserving the last validated state"
+                    ),
                     "hardware": "Wokwi ESP32 sensor/actuator node + Python Raspberry Pi 4B logical client",
                     "connected_stations": len(live_stations),
                     "required_stations": len(fs.STATIONS),
@@ -712,7 +1138,9 @@ class PublicFederatedEngine:
             )
             fs.STATE.cloud(
                 status=(
-                    "Live commands returned to all Wokwi pumps"
+                    "Review commands completed across all three station paths"
+                    if all_live and LOCAL_REVIEW_MODE
+                    else "Live commands returned to all Wokwi pumps"
                     if all_live
                     else f"Link verification window — {len(live_stations)}/3 connected; {int(grace_remaining + 0.999)} s remaining"
                     if recovering
@@ -728,7 +1156,9 @@ class PublicFederatedEngine:
             fs.STATE.event(
                 "live" if all_live else "recovery" if recovering else "sync" if synchronizing else "hold" if has_validated_state else "standby",
                 (
-                    f"Control cycle {control_cycle}: all three Wokwi stations acknowledged"
+                    f"Review cycle {control_cycle}: all three local station paths acknowledged"
+                    if all_live and LOCAL_REVIEW_MODE
+                    else f"Control cycle {control_cycle}: all three Wokwi stations acknowledged"
                     if all_live
                     else f"Quorum recovery: {len(live_stations)}/3 links; {int(grace_remaining + 0.999)} s before confirmed stop"
                     if recovering
