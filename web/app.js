@@ -7,14 +7,21 @@ const sensorDefs = {
   flow: ['Flow', 'm³/h', '↝'],
   residual_chlorine: ['Residual Cl₂', 'mg/L', '◌'],
 };
+const perturbationLevels = [-100, -75, -50, -25, -10, 0, 10, 25, 50, 75, 100];
+const perturbationOptions = [
+  ['raw_turbidity', 'Raw turbidity load ↕'],
+  ['flow', 'Hydraulic flow load ↕'],
+  ['ph_shift', 'pH shift ↕'],
+  ['chlorine_demand', 'Chlorine demand ↕'],
+];
 const stages = [
-  { key: 'sensor', label: 'Sensor sampling', color: '#1787ff', duration: 1600 },
-  { key: 'edge', label: 'ESP32 acquisition', color: '#1787ff', duration: 850 },
-  { key: 'local', label: 'Raspberry Pi local learning', color: '#8954ff', duration: 1250 },
-  { key: 'upload', label: 'Uploading local weights', color: '#8954ff', duration: 1300 },
-  { key: 'verify', label: 'PAV authenticating three signed updates', color: '#ed4658', duration: 1150 },
-  { key: 'aggregate', label: 'Relation-guided aggregation', color: '#8954ff', duration: 1200 },
-  { key: 'broadcast', label: 'Broadcasting global update', color: '#10ad72', duration: 1300 },
+  { key: 'sensor', label: 'Sensor sampling', color: '#1787ff', duration: 1300 },
+  { key: 'edge', label: 'ESP32 acquisition', color: '#1787ff', duration: 700 },
+  { key: 'local', label: 'Raspberry Pi local learning', color: '#8954ff', duration: 1000 },
+  { key: 'upload', label: 'Uploading local weights', color: '#8954ff', duration: 950 },
+  { key: 'verify', label: 'PAV authenticating three signed updates', color: '#ed4658', duration: 900 },
+  { key: 'aggregate', label: 'Relation-guided aggregation', color: '#8954ff', duration: 950 },
+  { key: 'broadcast', label: 'Broadcasting global update', color: '#10ad72', duration: 1000 },
   { key: 'actuate', label: 'Applying dosing commands', color: '#ed4658', duration: 2600 },
 ];
 
@@ -26,6 +33,10 @@ let latestState = null;
 let queuedState = null;
 let currentCycleState = null;
 let activeCycle = null;
+
+function isActiveExecutionMode(mode) {
+  return ['LIVE MQTT', 'CLOUD FEDERATED LIVE', 'LOCAL REVIEW LIVE'].includes(mode);
+}
 let cycleRunning = false;
 let cycleToken = 0;
 let standbyApplied = false;
@@ -58,9 +69,24 @@ function treatmentOutcomeMarkup(id) {
   return `<section class="treatment-outcome" aria-label="Live treatment outcome">
     <div class="treatment-title"><span>Live treatment outcome</span><strong id="${id}-quality" class="quality-status">Awaiting cycle</strong></div>
     <div class="treatment-path">
-      <div class="water-state before"><small>BEFORE TREATMENT</small><b id="${id}-before-ntu">— NTU</b><em>Raw turbidity</em></div>
+      <div class="water-state before"><small>BEFORE CURRENT DOSING</small><b id="${id}-before-ntu">— NTU</b><em id="${id}-before-filtered">Filtered — NTU</em><span id="${id}-before-chlorine">Residual Cl₂ — mg/L</span></div>
       <div class="dose-state"><small>DOSING</small><b><span id="${id}-dose-alum">0.0%</span> Alum</b><b><span id="${id}-dose-chlorine">0.0%</span> Cl₂</b></div>
-      <div class="water-state after"><small>AFTER TREATMENT</small><b id="${id}-after-ntu">— NTU</b><em id="${id}-removal">Removal —</em><span id="${id}-after-chlorine">Residual Cl₂ — mg/L</span></div>
+      <div id="${id}-after-state" class="water-state after"><small>MODELED NEXT CYCLE</small><b id="${id}-after-ntu">— NTU</b><em id="${id}-removal">Turbidity change —</em><span id="${id}-after-chlorine">Residual Cl₂ — mg/L</span><strong id="${id}-chlorine-effect" class="chlorine-effect">Cl₂ change —</strong></div>
+    </div>
+  </section>`;
+}
+
+function perturbationMarkup(id) {
+  return `<section id="${id}-perturbation" class="perturbation-card" aria-label="Controlled input perturbation">
+    <div class="perturbation-head"><span>Controlled input perturbation</span><strong id="${id}-perturb-status">NORMAL</strong></div>
+    <div class="perturbation-controls">
+      <label><span>Variable</span><select id="${id}-perturb-variable" aria-label="${id} perturbation variable">${perturbationOptions.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label>
+      <label class="perturbation-lever"><span>Input adjustment <output id="${id}-perturb-level">0% · dataset</output></span><input id="${id}-perturb-slider" type="range" min="0" max="10" step="1" value="5" aria-label="${id} perturbation intensity"><i><b>−100%</b><b>−50%</b><b>0</b><b>+50%</b><b>+100%</b></i></label>
+      <div class="perturbation-actions"><button id="${id}-perturb-apply" type="button">Apply & hold</button><button id="${id}-perturb-reset" class="secondary" type="button">Reset</button></div>
+    </div>
+    <div class="perturbation-result">
+      <span>Original <b id="${id}-perturb-original">—</b></span><i>→</i><span>Adjusted <b id="${id}-perturb-adjusted">—</b></span>
+      <span class="response">Δ H6 <b id="${id}-perturb-forecast">—</b> · Alum <b id="${id}-perturb-alum">—</b> · Cl₂ <b id="${id}-perturb-chlorine">—</b></span>
     </div>
   </section>`;
 }
@@ -87,6 +113,7 @@ function stationShell(id, station) {
     <div class="station-head"><div><h2 id="${id}-name">${esc(station.name || id)}</h2><div id="${id}-origin" class="origin">${esc(station.origin || '—')}</div></div><div class="station-badges"><span id="${id}-online" class="online">OFFLINE</span><span id="${id}-pav" class="pav-badge">PAV CHECKING</span></div></div>
     <div class="sensor-grid">${sensors}</div>
     ${sensorMotionMarkup(id)}
+    ${perturbationMarkup(id)}
     <div class="hardware">
       <div id="${id}-esp32" class="device esp32"><span class="device-leds"><i class="red"></i><i class="green"></i></span><b>ESP32 station</b><small>sense · event bus · PWM</small></div>
       <div class="data-lane"><i class="lane-ball edge"></i><i class="lane-ball return"></i></div>
@@ -95,8 +122,8 @@ function stationShell(id, station) {
     <div class="local-box"><div class="local-row"><span id="${id}-phase">Waiting</span><span id="${id}-progressText">0%</span></div><div class="track"><span id="${id}-progress"></span></div></div>
     ${commandMarkup(id)}
     <div class="pumps">
-      <div id="${id}-pump-alum" class="pump" style="--power:0"><span class="pump-icon"></span><span><b id="${id}-alum">0.0%</b><small>Alum pump</small></span></div>
-      <div id="${id}-pump-chlorine" class="pump" style="--power:0"><span class="pump-icon"></span><span><b id="${id}-chlorine">0.0%</b><small>Cl₂ pump</small></span></div>
+      <div id="${id}-pump-alum" class="pump" style="--power:0"><span class="pump-icon"></span><span><b id="${id}-alum">0.0%</b><small>Alum pump</small><em id="${id}-alum-change" class="pump-change">Dataset control</em></span></div>
+      <div id="${id}-pump-chlorine" class="pump" style="--power:0"><span class="pump-icon"></span><span><b id="${id}-chlorine">0.0%</b><small>Cl₂ pump</small><em id="${id}-chlorine-change" class="pump-change">Dataset control</em></span></div>
     </div>
     ${treatmentOutcomeMarkup(id)}
     <div class="station-foot"><span id="${id}-mode" class="control-mode">Awaiting control command</span><a id="${id}-link" class="open-node pending" target="_blank" rel="noopener">Inspect circuit ↗</a></div>
@@ -107,6 +134,130 @@ function ensureStations(stations) {
   const host = document.querySelector('#stations');
   if (host.children.length) return;
   host.innerHTML = order.map(id => stationShell(id, stations[id] || {})).join('');
+  bindPerturbationControls();
+}
+
+function signed(value, digits = 1, suffix = '') {
+  if (value == null || !Number.isFinite(Number(value))) return '—';
+  const number = Number(value);
+  return `${number >= 0 ? '+' : ''}${number.toFixed(digits)}${suffix}`;
+}
+
+function perturbationValue(value, unit) {
+  if (value == null || !Number.isFinite(Number(value))) return '—';
+  const digits = unit === 'm³/h' ? 0 : unit === 'pH' ? 2 : 3;
+  return `${Number(value).toFixed(digits)} ${unit || ''}`.trim();
+}
+
+function perturbationLevelLabel(value) {
+  return value === 0 ? '0% · dataset' : `${value > 0 ? '+' : ''}${value}%`;
+}
+
+function pumpTransition(baseline, adjusted) {
+  if (![baseline, adjusted].every(value => value != null && Number.isFinite(Number(value)))) return '—';
+  const change = Number(adjusted) - Number(baseline);
+  return `${Number(baseline).toFixed(1)}→${Number(adjusted).toFixed(1)}% (${change >= 0 ? '+' : ''}${change.toFixed(1)})`;
+}
+
+function updatePumpPerturbation(id, key, status, perturbation) {
+  const pump = document.querySelector(`#${id}-pump-${key}`);
+  const detail = document.querySelector(`#${id}-${key}-change`);
+  if (!pump || !detail) return;
+  const baseline = perturbation.baseline_pumps?.[key];
+  const adjusted = perturbation.adjusted_pumps?.[key];
+  const ready = status === 'ACTIVE' && [baseline, adjusted].every(value => value != null && Number.isFinite(Number(value)));
+  const pending = ['PENDING', 'TRANSMITTED'].includes(status);
+  const delta = ready ? Number(adjusted) - Number(baseline) : 0;
+  pump.classList.toggle('perturb-pending', pending);
+  pump.classList.toggle('perturb-up', ready && delta > 0.05);
+  pump.classList.toggle('perturb-down', ready && delta < -0.05);
+  detail.className = `pump-change${delta > 0.05 ? ' up' : delta < -0.05 ? ' down' : ''}`;
+  detail.textContent = pending
+    ? 'Awaiting station ACK'
+    : ready
+    ? pumpTransition(baseline, adjusted)
+    : 'Dataset control';
+}
+
+function updatePerturbationStatus(id, perturbation = {}) {
+  const card = document.querySelector(`#${id}-perturbation`);
+  if (!card) return;
+  const status = perturbation.status || 'NORMAL';
+  card.dataset.status = status.toLowerCase();
+  const statusText = status === 'TRANSMITTED' ? 'IN TRANSIT' : status;
+  document.querySelector(`#${id}-perturb-status`).textContent = status === 'ACTIVE' && perturbation.applied_cycle
+    ? `${statusText} · CYCLE ${perturbation.applied_cycle}`
+    : statusText;
+  const busy = ['PENDING', 'TRANSMITTED'].includes(status);
+  document.querySelector(`#${id}-perturb-original`).textContent = busy ? 'dataset sample' : perturbationValue(perturbation.original_value, perturbation.unit);
+  document.querySelector(`#${id}-perturb-adjusted`).textContent = busy ? 'awaiting ACK' : perturbationValue(perturbation.adjusted_value, perturbation.unit);
+  document.querySelector(`#${id}-perturb-forecast`).textContent = busy ? 'pending' : signed(perturbation.forecast_delta, 2, ' NTU');
+  document.querySelector(`#${id}-perturb-alum`).textContent = busy ? 'pending' : pumpTransition(perturbation.baseline_pumps?.alum, perturbation.adjusted_pumps?.alum);
+  document.querySelector(`#${id}-perturb-chlorine`).textContent = busy ? 'pending' : pumpTransition(perturbation.baseline_pumps?.chlorine, perturbation.adjusted_pumps?.chlorine);
+  updatePumpPerturbation(id, 'alum', status, perturbation);
+  updatePumpPerturbation(id, 'chlorine', status, perturbation);
+  const level = Number(perturbation.percent || 0);
+  const levelIndex = perturbationLevels.indexOf(level);
+  const requestId = perturbation.request_id || '';
+  const shouldSyncControl = Boolean(requestId) && card.dataset.requestId !== requestId;
+  if (shouldSyncControl && levelIndex >= 0) {
+    document.querySelector(`#${id}-perturb-slider`).value = String(levelIndex);
+    document.querySelector(`#${id}-perturb-level`).textContent = perturbationLevelLabel(level);
+  }
+  if (shouldSyncControl && perturbation.variable && perturbationOptions.some(([value]) => value === perturbation.variable)) {
+    document.querySelector(`#${id}-perturb-variable`).value = perturbation.variable;
+  }
+  card.dataset.requestId = requestId;
+  document.querySelector(`#${id}-perturb-apply`).disabled = busy;
+  document.querySelector(`#${id}-perturb-slider`).disabled = busy;
+  document.querySelector(`#${id}-perturb-variable`).disabled = busy;
+}
+
+async function submitPerturbation(id, action) {
+  const card = document.querySelector(`#${id}-perturbation`);
+  const applyButton = document.querySelector(`#${id}-perturb-apply`);
+  const resetButton = document.querySelector(`#${id}-perturb-reset`);
+  const slider = document.querySelector(`#${id}-perturb-slider`);
+  const variable = document.querySelector(`#${id}-perturb-variable`).value;
+  const percent = perturbationLevels[Number(slider.value)] ?? 0;
+  applyButton.disabled = true;
+  resetButton.disabled = true;
+  card.dataset.status = 'pending';
+  document.querySelector(`#${id}-perturb-status`).textContent = action === 'reset' ? 'RESETTING' : 'QUEUING';
+  try {
+    const response = await fetch('/api/perturbation', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ station: id, action, variable, percent }),
+    });
+    const documentBody = await response.json();
+    if (!response.ok || !documentBody.ok) throw new Error(documentBody.error || `HTTP ${response.status}`);
+    updatePerturbationStatus(id, documentBody.perturbation || {});
+    if (action === 'reset') {
+      slider.value = '5';
+      document.querySelector(`#${id}-perturb-level`).textContent = perturbationLevelLabel(0);
+    }
+  } catch (error) {
+    card.dataset.status = 'error';
+    document.querySelector(`#${id}-perturb-status`).textContent = 'CONTROL ERROR';
+    applyButton.disabled = false;
+    slider.disabled = false;
+    document.querySelector(`#${id}-perturb-variable`).disabled = false;
+  } finally {
+    resetButton.disabled = false;
+  }
+}
+
+function bindPerturbationControls() {
+  order.forEach(id => {
+    const slider = document.querySelector(`#${id}-perturb-slider`);
+    slider.addEventListener('input', () => {
+      const value = perturbationLevels[Number(slider.value)] ?? 0;
+      document.querySelector(`#${id}-perturb-level`).textContent = perturbationLevelLabel(value);
+    });
+    document.querySelector(`#${id}-perturb-apply`).addEventListener('click', () => submitPerturbation(id, 'apply'));
+    document.querySelector(`#${id}-perturb-reset`).addEventListener('click', () => submitPerturbation(id, 'reset'));
+  });
 }
 
 function updateStationStatus(id, station) {
@@ -261,40 +412,78 @@ function enterHoldState(state) {
 
 function commitSensor(id, station, key) {
   setChangingText(document.querySelector(`#${id}-${key}`), fmt(station.sensors?.[key], key));
-  if (key === 'residual_chlorine') updateTreatmentOutcome(id, station);
+  if (key === 'residual_chlorine') updateTreatmentOutcome(id, station, false);
 }
 
 function resetTreatmentOutcome(id) {
   document.querySelector(`#${id}-before-ntu`).textContent = '— NTU';
+  document.querySelector(`#${id}-before-filtered`).textContent = 'Filtered — NTU';
+  document.querySelector(`#${id}-before-chlorine`).textContent = 'Residual Cl₂ — mg/L';
   document.querySelector(`#${id}-after-ntu`).textContent = '— NTU';
-  document.querySelector(`#${id}-removal`).textContent = 'Removal —';
+  document.querySelector(`#${id}-removal`).textContent = 'Turbidity change —';
   document.querySelector(`#${id}-after-chlorine`).textContent = 'Residual Cl₂ — mg/L';
+  document.querySelector(`#${id}-chlorine-effect`).textContent = 'Cl₂ change —';
   const quality = document.querySelector(`#${id}-quality`);
   quality.textContent = 'Awaiting cycle';
   quality.classList.remove('within', 'outside');
 }
 
-function updateTreatmentOutcome(id, station) {
-  const raw = station.sensors?.raw_turbidity;
-  const filtered = station.sensors?.filtered_turbidity;
-  const chlorine = station.sensors?.residual_chlorine;
-  if (![raw, filtered, chlorine].every(value => value != null && Number.isFinite(Number(value)))) {
+function updateTreatmentOutcome(id, station, revealAfter = true, animate = false) {
+  const feedback = station.treatment_feedback || {};
+  const before = feedback.before || {};
+  const after = feedback.after || {};
+  const delta = feedback.delta || {};
+  const raw = before.raw_turbidity ?? station.sensors?.raw_turbidity;
+  const filteredBefore = before.filtered_turbidity ?? station.sensors?.filtered_turbidity;
+  const chlorineBefore = before.residual_chlorine ?? station.sensors?.residual_chlorine;
+  const filteredAfter = after.filtered_turbidity ?? filteredBefore;
+  const chlorineAfter = after.residual_chlorine ?? chlorineBefore;
+  if (![raw, filteredBefore, chlorineBefore, filteredAfter, chlorineAfter].every(value => value != null && Number.isFinite(Number(value)))) {
     resetTreatmentOutcome(id);
     return;
   }
   const rawValue = Number(raw);
-  const filteredValue = Number(filtered);
-  const chlorineValue = Number(chlorine);
-  const removal = rawValue > 0 ? 100 * (rawValue - filteredValue) / rawValue : 0;
-  const jointWithin = filteredValue <= 1.0 && chlorineValue >= 0.2 && chlorineValue <= 0.4;
+  const filteredBeforeValue = Number(filteredBefore);
+  const chlorineBeforeValue = Number(chlorineBefore);
+  const filteredAfterValue = Number(filteredAfter);
+  const chlorineAfterValue = Number(chlorineAfter);
   setChangingText(document.querySelector(`#${id}-before-ntu`), `${rawValue.toFixed(2)} NTU`);
-  setChangingText(document.querySelector(`#${id}-after-ntu`), `${filteredValue.toFixed(2)} NTU`);
-  setChangingText(document.querySelector(`#${id}-removal`), `Removal ${Math.max(0, removal).toFixed(1)}%`);
-  setChangingText(document.querySelector(`#${id}-after-chlorine`), `Residual Cl₂ ${chlorineValue.toFixed(2)} mg/L`);
+  setChangingText(document.querySelector(`#${id}-before-filtered`), `Filtered ${filteredBeforeValue.toFixed(2)} NTU`);
+  setChangingText(document.querySelector(`#${id}-before-chlorine`), `Residual Cl₂ ${chlorineBeforeValue.toFixed(2)} mg/L`);
   const quality = document.querySelector(`#${id}-quality`);
-  quality.textContent = jointWithin ? 'WATER WITHIN TARGET' : 'ATTENTION REQUIRED';
+  if (!revealAfter) {
+    document.querySelector(`#${id}-after-state`).classList.remove('feedback-pulse');
+    document.querySelector(`#${id}-after-ntu`).textContent = 'Processing…';
+    document.querySelector(`#${id}-removal`).textContent = 'Awaiting pump response';
+    document.querySelector(`#${id}-after-chlorine`).textContent = 'Residual Cl₂ processing…';
+    document.querySelector(`#${id}-chlorine-effect`).textContent = 'Cl₂ command in progress';
+    quality.textContent = 'DOSING IN PROGRESS';
+    quality.classList.remove('within', 'outside');
+    return;
+  }
+  const turbidityDelta = Number(delta.filtered_turbidity ?? (filteredAfterValue - filteredBeforeValue));
+  const chlorineDelta = Number(delta.residual_chlorine ?? (chlorineAfterValue - chlorineBeforeValue));
+  const jointWithin = filteredAfterValue <= 1.0 && chlorineAfterValue >= 0.2 && chlorineAfterValue <= 0.4;
+  setChangingText(document.querySelector(`#${id}-after-ntu`), `${filteredAfterValue.toFixed(2)} NTU`);
+  const turbidityChange = Math.abs(turbidityDelta) < 0.005
+    ? 'Turbidity stable (<0.01 NTU)'
+    : `Turbidity ${turbidityDelta > 0 ? '+' : ''}${turbidityDelta.toFixed(2)} NTU`;
+  setChangingText(document.querySelector(`#${id}-removal`), turbidityChange);
+  setChangingText(document.querySelector(`#${id}-after-chlorine`), `Residual Cl₂ ${chlorineAfterValue.toFixed(2)} mg/L`);
+  const chlorineDirection = Math.abs(chlorineDelta) < 0.005 ? 'maintained' : chlorineDelta > 0 ? 'increased' : 'reduced';
+  const chlorineChange = Math.abs(chlorineDelta) < 0.005
+    ? 'Cl₂ stable (<0.01 mg/L) · maintained'
+    : `Cl₂ ${chlorineDelta > 0 ? '+' : ''}${chlorineDelta.toFixed(2)} mg/L · ${chlorineDirection}`;
+  setChangingText(document.querySelector(`#${id}-chlorine-effect`), chlorineChange);
+  quality.textContent = jointWithin ? 'NEXT STATE WITHIN TARGET' : 'CORRECTION CONTINUES';
   quality.classList.toggle('within', jointWithin);
   quality.classList.toggle('outside', !jointWithin);
+  const afterCard = document.querySelector(`#${id}-after-state`);
+  afterCard.classList.remove('feedback-pulse');
+  if (animate) {
+    void afterCard.offsetWidth;
+    afterCard.classList.add('feedback-pulse');
+  }
 }
 
 function updateStationProcess(id, station) {
@@ -402,6 +591,7 @@ function runStage(index, state, token) {
           const station = state.stations?.[id] || {};
           commitPump(id, station, 'chlorine');
           commitControlResult(id, station);
+          updateTreatmentOutcome(id, station, true, true);
         });
       }, 1530);
       stageTimers.push(alumArrival, chlorineArrival);
@@ -455,7 +645,7 @@ document.querySelector('#motionToggle').addEventListener('click', event => {
     cycleRunning = false;
   } else {
     const state = queuedState || latestState || currentCycleState;
-    if (state?.deployment?.live_mode === 'LIVE MQTT') startCycle(state, true);
+    if (isActiveExecutionMode(state?.deployment?.live_mode)) startCycle(state, true);
   }
 });
 
@@ -464,7 +654,7 @@ document.querySelector('#replay').addEventListener('click', () => {
   document.body.classList.remove('motion-paused');
   document.querySelector('#motionToggle').textContent = 'Pause motion';
   const state = latestState || currentCycleState;
-  if (state?.deployment?.live_mode === 'LIVE MQTT') startCycle(state, true);
+  if (isActiveExecutionMode(state?.deployment?.live_mode)) startCycle(state, true);
 });
 
 function renderSummary(summary) {
@@ -482,7 +672,8 @@ async function refresh() {
     const state = await response.json();
     const mode = state.deployment?.live_mode || 'INITIALIZING';
     const isCloud = mode === 'CLOUD FEDERATED LIVE';
-    const isLive = mode === 'LIVE MQTT' || isCloud;
+    const isReview = mode === 'LOCAL REVIEW LIVE';
+    const isLive = isActiveExecutionMode(mode);
     const isHolding = mode === 'HOLDING LAST STATE';
     const isRecovering = mode === 'LINK RECOVERY';
     const isSynchronizing = mode === 'SYNCHRONIZING STATIONS';
@@ -492,13 +683,14 @@ async function refresh() {
     document.querySelector('#runState').textContent = mode;
     const transport = state.deployment?.transport || 'PUBLIC MQTT';
     const transportDetail = state.broker?.connected
-      ? (String(transport).includes('CLOUD') ? 'EVENT BUS ACTIVE' : 'BROKER CONNECTED')
-      : (String(transport).includes('CLOUD') ? 'EVENT BUS STARTING' : 'BROKER STANDBY');
+      ? (String(transport).includes('LOCAL') ? 'REVIEW BUS ACTIVE' : String(transport).includes('CLOUD') ? 'EVENT BUS ACTIVE' : 'BROKER CONNECTED')
+      : (String(transport).includes('LOCAL') ? 'REVIEW BUS STARTING' : String(transport).includes('CLOUD') ? 'EVENT BUS STARTING' : 'BROKER STANDBY');
     document.querySelector('#transportState').textContent = `${transport} · ${transportDetail}`;
     document.querySelector('#round').textContent = state.round;
     document.querySelector('#maxRound').textContent = state.max_rounds;
     ensureStations(state.stations || {});
     order.forEach(id => updateStationStatus(id, state.stations?.[id] || {}));
+    order.forEach(id => updatePerturbationStatus(id, state.perturbations?.[id] || {}));
     updateSecurity(state);
     latestState = state;
     const nextCycle = Number(state.live_cycle || 0);
@@ -513,7 +705,9 @@ async function refresh() {
       enterStrictStandby(state);
     }
     document.querySelector('#events').innerHTML = state.events.length ? state.events.map(event => `<div class="event"><time>${esc(event.time)}</time><span class="badge">${esc(event.kind).toUpperCase()}</span><span>${event.station ? `${esc(event.station)}: ` : ''}${esc(event.text)}</span></div>`).join('') : '<div class="empty">Waiting for events…</div>';
-    const sampleDetail = isCloud
+    const sampleDetail = isReview
+      ? 'The displayed figures use deterministic local station acknowledgements so every interface stage and control response can be inspected before publishing; no external station claim is made in this review mode.'
+      : isCloud
       ? `The displayed figures are the current samples emitted by three independent cloud station runtimes. Each cycle performs three private local updates, relation-guided aggregation to global model v${state.federation_version || '—'}, H6 inference and acknowledged actuator commands.`
       : isLive
       ? 'The displayed figures are the exact current MQTT samples transmitted to the three acknowledged Wokwi nodes.'
