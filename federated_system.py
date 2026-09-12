@@ -124,6 +124,9 @@ def json_safe(value):
 class StateStore:
     def __init__(self):
         self.lock = threading.Lock()
+        # Wakes the control engine as soon as the operator applies or resets a
+        # held input.  This avoids waiting for the next scheduled 12 s cycle.
+        self.control_wake_event = threading.Event()
         self.event_archive = []
         self.state = {
             "running": False,
@@ -198,12 +201,14 @@ class StateStore:
             )
             self.state["perturbations"][station] = current
             self.state["updated_at"] = time.time()
+            self.control_wake_event.set()
             return json_safe(copy.deepcopy(current))
 
     def reset_perturbation(self, station: str):
         with self.lock:
             self.state["perturbations"][station] = normal_perturbation_state()
             self.state["updated_at"] = time.time()
+            self.control_wake_event.set()
             return json_safe(copy.deepcopy(self.state["perturbations"][station]))
 
     def pending_perturbation(self, station: str):

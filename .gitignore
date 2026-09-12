@@ -5,3 +5,7 @@ __pycache__/
 venv/
 .linked-testdeps/
 .preview-deps/
+.preview-deps-v18/
+.preview-deps-v19/
+.preview-deps-v20/
+paho_mqtt-*.whl

@@ -824,6 +824,13 @@ class PublicFederatedEngine:
                 "residual_chlorine": float(row.residual_chlorine),
                 "target_forecast": float(row.forecast_h6_ntu),
             }
+            pending = fs.STATE.pending_perturbation(station)
+            active = self.perturbation_samples.get(station)
+            if not pending and active:
+                # Reset is an explicit return to the unmodified dataset.  Do
+                # not carry the previous controlled treatment state into the
+                # first baseline sample after reset.
+                self.next_treatment_state.pop(station, None)
             carried_state = self.next_treatment_state.get(station)
             if carried_state:
                 payload["filtered_turbidity"] = float(
@@ -832,17 +839,15 @@ class PublicFederatedEngine:
                 payload["residual_chlorine"] = float(
                     carried_state["residual_chlorine"]
                 )
-            pending = fs.STATE.pending_perturbation(station)
             if pending:
-                active = self.perturbation_samples.get(station)
                 if (
                     active
                     and active["request_id"] == pending["request_id"]
-                    and not active["applied"]
                 ):
-                    # Re-send the exact same station sample until Wokwi
-                    # acknowledges its sequence; do not move the target while
-                    # browser simulation timing is throttled.
+                    # Apply & hold means exactly that: keep re-sending the same
+                    # controlled sample until the operator changes it or
+                    # presses Reset.  This also survives slow/background Wokwi
+                    # execution without silently returning to dataset control.
                     payload = dict(active["payload"])
                 else:
                     payload = apply_controlled_perturbation(payload, pending)
@@ -935,6 +940,10 @@ class PublicFederatedEngine:
         quorum_candidate_since = None
         quorum_loss_since = None
         while True:
+            # Consume an operator wake-up before building this cycle.  If the
+            # control changed just before this line, request_station_rows reads
+            # the new held state immediately.
+            fs.STATE.control_wake_event.clear()
             cycle += 1
             self.request_station_rows(cycle)
             time.sleep(min(1.0, CYCLE_SECONDS / 3.0))
@@ -994,7 +1003,6 @@ class PublicFederatedEngine:
                     baseline_sensors = None
                     if (
                         active_control
-                        and not active_control["applied"]
                         and active_control["payload"].get("perturbation")
                         and int(live_payload.get("sequence", -1))
                         == int(active_control["payload"].get("sequence", -2))
@@ -1188,7 +1196,10 @@ class PublicFederatedEngine:
                 wait_seconds = deadline - time.monotonic()
                 if wait_seconds <= 0:
                     break
-                time.sleep(min(0.25, wait_seconds))
+                if fs.STATE.control_wake_event.wait(
+                    timeout=min(0.25, wait_seconds)
+                ):
+                    break
                 self.drain_live_telemetry()
                 refreshed, _ = self.live_station_status()
                 if set(refreshed) != baseline:
