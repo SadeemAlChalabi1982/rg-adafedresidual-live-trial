@@ -1,6 +1,6 @@
-# RG-AdaFedResidual Cloud Federated Laboratory
+# RG-AdaFedResidual Standalone Federated Laboratory
 
-This branch runs an executable, reviewer-facing cloud simulation for three water-treatment stations. It is independent of the browser lifetime of the optional Wokwi circuit projects.
+This branch runs the same committee-ready interface and controlled-input tools as the Wokwi-linked edition, while remaining fully independent of Wokwi. The three cloud station runtimes acknowledge every cycle locally, so the laboratory starts automatically and continues when the optional circuit pages are closed.
 
 ## Executable cloud path
 
@@ -9,6 +9,9 @@ This branch runs an executable, reviewer-facing cloud simulation for three water
 - Every operational cycle performs local RG-AdaFedResidual updates at all three Raspberry Pi client processes, uploads model updates, executes relation-guided aggregation, broadcasts a new global version, runs H6 inference, and sends acknowledged dosing commands back to the station plants.
 - Only model parameters and operational commands cross the federated boundary; raw station frames remain owned by their station runtimes.
 - Wokwi links remain available for inspecting the corresponding ESP32 circuit diagrams, but Wokwi is not required for the cloud engine to continue.
+- Each station includes the same persistent controlled-input lever used by the linked edition. The operator can apply and hold a signed change to turbidity, flow, pH, or chlorine demand, inspect the resulting H6 forecast and pump response, and return to the original dataset stream with **Reset**.
+- The alum and chlorine commands feed the same disclosed first-order next-cycle treatment response shown in the final linked interface.
+- **Save Log** exports the complete current-session execution log as UTF-8 CSV.
 
 ## PAV security layer
 
@@ -20,12 +23,12 @@ Keys are never returned by the API or rendered in the dashboard. Render can prov
 
 Build command: `pip install -r requirements.txt`
 
-Start command: `python cloud_app.py`
+Start command: `python app.py`
 
 Health check: `/api/state`
 
-The free Render instance is suitable for execution testing and spins down after inactivity. Keeping the public dashboard open maintains inbound polling during a review session. Upgrading the same service later removes the free-instance sleep behavior without a code change.
+`LOCAL_REVIEW_MODE=true` activates the internal three-station acknowledgement loop and disables external MQTT publishing. The free Render instance is suitable for execution testing and spins down after inactivity. Opening the public dashboard wakes the service; no Wokwi tab is required.
 
 ## Academic disclosure
 
-The deployment is an executable cloud simulation. Wokwi represents the ESP32 electrical/firmware layer when opened; the continuously hosted station and Raspberry Pi client processes are cloud runtimes rather than claims of installed physical hardware.
+The deployment is an executable cloud simulation with the same user interface and control logic as the linked edition. Wokwi remains a visual circuit reference in this branch; the continuously hosted station and Raspberry Pi client processes are cloud runtimes rather than claims of installed physical hardware.

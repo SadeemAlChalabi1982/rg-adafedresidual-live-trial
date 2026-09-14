@@ -4,7 +4,7 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python cloud_app.py
+    startCommand: python app.py
     healthCheckPath: /api/state
     envVars:
       - key: PYTHON_VERSION
@@ -14,7 +14,9 @@ services:
       - key: CYCLE_SECONDS
         value: "12"
       - key: ONLINE_LOCAL_EPOCHS
-        value: "2"
+        value: "1"
+      - key: LOCAL_REVIEW_MODE
+        value: "true"
       - key: WOKWI_AUSTIN_URL
         value: https://wokwi.com/projects/473854149978000385
       - key: WOKWI_TONGJI_URL
