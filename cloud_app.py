@@ -8,6 +8,15 @@ import os
 # No MQTT/Wokwi process is required and the linked deployment is untouched.
 if __name__ == "__main__":
     os.environ.setdefault("LOCAL_REVIEW_MODE", "true")
+    os.environ.setdefault(
+        "WOKWI_AUSTIN_URL", "https://wokwi.com/projects/473854149978000385"
+    )
+    os.environ.setdefault(
+        "WOKWI_TONGJI_URL", "https://wokwi.com/projects/473855638857098241"
+    )
+    os.environ.setdefault(
+        "WOKWI_VIRTUAL_URL", "https://wokwi.com/projects/473855699260353537"
+    )
     from app import serve as serve_unified_standalone
 
     serve_unified_standalone()
