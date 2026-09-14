@@ -5,7 +5,8 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="Executable three-station RG-AdaFedResidual cloud federated water-treatment laboratory.">
   <title>RG-AdaFedResidual Cloud Federated Laboratory</title>
-  <link rel="stylesheet" href="styles.css?v=15">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css?v=29">
 </head>
 <body>
 <main class="page">
@@ -108,10 +109,16 @@
       </div>
       <div id="deploymentDisclosure" class="disclosure">Loading execution provenance…</div>
     </div>
-    <div class="panel"><h3>Execution log</h3><div id="events" class="events"><div class="empty">Waiting for events…</div></div></div>
+    <div class="panel">
+      <div class="panel-heading">
+        <h3>Execution log</h3>
+        <a class="save-log" href="/api/execution-log.csv" download>Save Log ↓</a>
+      </div>
+      <div id="events" class="events"><div class="empty">Waiting for events…</div></div>
+    </div>
   </section>
   <section class="panel summary"><h3>Live water-quality acceptance</h3><div id="summary" class="empty">Acceptance statistics will appear after regulation cycles finish.</div></section>
 </main>
-<script src="app.js?v=15"></script>
+  <script src="app.js?v=29"></script>
 </body>
 </html>
