@@ -1,6 +1,18 @@
 from __future__ import annotations
 
 import os
+
+# Render's preserved standalone service was originally configured to launch
+# this module directly. Keep that public start command compatible while routing
+# execution to the final unified interface in an internal three-station mode.
+# No MQTT/Wokwi process is required and the linked deployment is untouched.
+if __name__ == "__main__":
+    os.environ.setdefault("LOCAL_REVIEW_MODE", "true")
+    from app import serve as serve_unified_standalone
+
+    serve_unified_standalone()
+    raise SystemExit
+
 import hashlib
 import hmac
 import json
