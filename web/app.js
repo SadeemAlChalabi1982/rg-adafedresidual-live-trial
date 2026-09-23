@@ -14,6 +14,12 @@ const perturbationOptions = [
   ['ph_shift', 'pH shift ↕'],
   ['chlorine_demand', 'Chlorine demand ↕'],
 ];
+// Display calibration for translating the predicted pump command into a
+// chemical dose and a 24-hour quantity at the current station flow.
+const dosingCalibration = {
+  alumMaxDoseMgL: 60,
+  chlorineMaxDoseMgL: 5,
+};
 const stages = [
   { key: 'sensor', label: 'Sensor sampling', color: '#1787ff', duration: 1300 },
   { key: 'edge', label: 'ESP32 acquisition', color: '#1787ff', duration: 700 },
@@ -122,8 +128,15 @@ function stationShell(id, station) {
     <div class="local-box"><div class="local-row"><span id="${id}-phase">Waiting</span><span id="${id}-progressText">0%</span></div><div class="track"><span id="${id}-progress"></span></div></div>
     ${commandMarkup(id)}
     <div class="pumps">
-      <div id="${id}-pump-alum" class="pump" style="--power:0"><span class="pump-icon"></span><span><b id="${id}-alum">0.0%</b><small>Alum pump</small><em id="${id}-alum-change" class="pump-change">Dataset control</em></span></div>
-      <div id="${id}-pump-chlorine" class="pump" style="--power:0"><span class="pump-icon"></span><span><b id="${id}-chlorine">0.0%</b><small>Cl₂ pump</small><em id="${id}-chlorine-change" class="pump-change">Dataset control</em></span></div>
+      <div id="${id}-pump-alum" class="pump" style="--power:0"><span class="pump-icon"></span><span><b id="${id}-alum">0.0%</b><small>Alum pump</small><em id="${id}-alum-change" class="pump-change">Dataset-driven control</em></span></div>
+      <div id="${id}-pump-chlorine" class="pump" style="--power:0"><span class="pump-icon"></span><span><b id="${id}-chlorine">0.0%</b><small>Cl₂ pump</small><em id="${id}-chlorine-change" class="pump-change">Dataset-driven control</em></span></div>
+    </div>
+    <div class="recommended-quantity">
+      <div class="recommended-heading"><span>Predicted recommended quantity</span><strong>H6</strong></div>
+      <div class="recommended-values">
+        <span><b id="${id}-recommended-alum">— kg/day</b><small>Alum</small><em id="${id}-recommended-alum-dose">— mg/L</em></span>
+        <span><b id="${id}-recommended-chlorine">— kg/day</b><small>Chlorine</small><em id="${id}-recommended-chlorine-dose">— mg/L</em></span>
+      </div>
     </div>
     ${treatmentOutcomeMarkup(id)}
     <div class="station-foot"><span id="${id}-mode" class="control-mode">Awaiting control command</span><a id="${id}-link" class="open-node pending" target="_blank" rel="noopener">Inspect circuit ↗</a></div>
@@ -176,7 +189,33 @@ function updatePumpPerturbation(id, key, status, perturbation) {
     ? 'Awaiting station ACK'
     : ready
     ? pumpTransition(baseline, adjusted)
-    : 'Dataset control';
+    : 'Dataset-driven control';
+}
+
+function updateRecommendedQuantity(id, station = {}) {
+  const flowM3H = Number(station.sensors?.flow);
+  const alumPercent = Number(station.pumps?.alum);
+  const chlorinePercent = Number(station.pumps?.chlorine);
+  const values = [flowM3H, alumPercent, chlorinePercent];
+  const ready = values.every(Number.isFinite) && flowM3H > 0;
+  const alumQuantity = document.querySelector(`#${id}-recommended-alum`);
+  const chlorineQuantity = document.querySelector(`#${id}-recommended-chlorine`);
+  const alumDoseElement = document.querySelector(`#${id}-recommended-alum-dose`);
+  const chlorineDoseElement = document.querySelector(`#${id}-recommended-chlorine-dose`);
+  if (!ready) {
+    alumQuantity.textContent = '— kg/day';
+    chlorineQuantity.textContent = '— kg/day';
+    alumDoseElement.textContent = '— mg/L';
+    chlorineDoseElement.textContent = '— mg/L';
+    return;
+  }
+  const alumDose = Math.max(0, alumPercent) / 100 * dosingCalibration.alumMaxDoseMgL;
+  const chlorineDose = Math.max(0, chlorinePercent) / 100 * dosingCalibration.chlorineMaxDoseMgL;
+  const dailyFlowML = flowM3H * 24 / 1000;
+  setChangingText(alumQuantity, `${(alumDose * dailyFlowML).toFixed(1)} kg/day`);
+  setChangingText(chlorineQuantity, `${(chlorineDose * dailyFlowML).toFixed(1)} kg/day`);
+  setChangingText(alumDoseElement, `${alumDose.toFixed(2)} mg/L`);
+  setChangingText(chlorineDoseElement, `${chlorineDose.toFixed(2)} mg/L`);
 }
 
 function updatePerturbationStatus(id, perturbation = {}) {
@@ -346,6 +385,7 @@ function enterStrictStandby(state) {
       document.querySelector(`#${id}-${key}`).textContent = '0.0%';
       document.querySelector(`#${id}-dose-${key}`).textContent = '0.0%';
     });
+    updateRecommendedQuantity(id, {});
     resetTreatmentOutcome(id);
     document.querySelector(`#${id}-mode`).textContent = 'Safety interlock · zero output';
   });
@@ -395,6 +435,7 @@ function enterHoldState(state) {
       document.querySelector(`#${id}-${key}`).textContent = `${value.toFixed(1)}%`;
       document.querySelector(`#${id}-dose-${key}`).textContent = `${value.toFixed(1)}%`;
     });
+    updateRecommendedQuantity(id, station);
     updateTreatmentOutcome(id, station);
     const age = Number(station.stale_seconds || 0);
     const remaining = Math.ceil(Number(state.deployment?.grace_remaining_seconds || 0));
@@ -501,6 +542,7 @@ function commitPump(id, station, key) {
   pump.classList.add('received');
   setChangingText(document.querySelector(`#${id}-${key}`), `${value.toFixed(1)}%`);
   setChangingText(document.querySelector(`#${id}-dose-${key}`), `${value.toFixed(1)}%`);
+  updateRecommendedQuantity(id, station);
 }
 
 function commitControlResult(id, station) {
